@@ -81,6 +81,7 @@ end once CALLIN seals its second hop.
 |---|---|
 | `firmware/` | The gateway's firmware, a PlatformIO project for a base ESP32 |
 | `firmware/web/` | The portal and the browser terminal, gzipped into the app image at build |
+| `host/` | The tests that need no board, for the four units that parse what somebody else sent |
 
 There is no `bbs/` folder yet: phase 1 changes nothing on the board, so there is no plugin to build
 into it. The board's half arrives with CALLIN in phase 3.
@@ -109,6 +110,76 @@ Measured at build on a bare ESP32-WROOM-32E:
 
 Flash is not the constraint and neither is static DRAM. **Internal heap with the access point up is
 the open question**, and it needs a board: see phase 2.
+
+## Testing it
+
+Four units have no platform in them, and between them they are every place this firmware parses
+something somebody else sent it. They run on a host, so they need no board:
+
+```
+cd host && make          # build and run all four
+cd host && make break    # prove each guard by removing it
+cd host && make asan     # the same under AddressSanitizer and UBSan
+```
+
+1,826 checks over the SPSC ring, the telnet client, the DNS wire format and the settings validator.
+
+**`make break` is the part worth understanding.** It compiles each suite once per `GW_TEST_BREAK`
+value, each removing exactly one guard from the code under test, and **refuses to pass unless
+something catches every one**. A test written after the fix that passes immediately has proved
+nothing, and this project's parent has shipped tests that agreed with the bug. A guard can be proved
+three ways and the run says which: a check fails, the code hangs, or ASan trips — that last being the
+only proof available for a guard whose whole job is to stop an out-of-bounds read, where what gets
+read is whatever is next in memory and no verdict need change.
+
+It has already earned it, five times, four of them against my own tests:
+
+- every compression-pointer test was a short packet, so with the pointer guard removed the `0xC0` ran
+  off the end and a *different* guard refused it. They proved the packet was refused without proving
+  which check did it;
+- the truncation sweep sliced a long-lived buffer, so a read past the end was still inside the
+  allocation and returned a neighbouring octet that something further down refused;
+- the ring's drop clamp was tested by dropping 99 from a ring of 32, and 99 happens to land on a
+  multiple of 32, so the mask hid its absence entirely;
+- `make break` itself first reported "every guard has a test" having tested none, because it built its
+  case list from a shell variable that did not exist;
+- and in the code rather than the tests: written as an `enum`, the break switch was invisible to the
+  preprocessor, so every `#if` compared 0 against an unknown identifier and **every guard was
+  compiled out of the firmware**. `-Werror` caught it in under a minute on an unused parameter.
+
+The encoders are written from the RFCs and share no code with the implementations — RFC 1035's wire
+format for DNS, RFC 854/855/856/858/1073's tables for telnet, with the expected bytes spelt out as
+literals. The parent project lost two rounds to a telnet test client written beside the server, which
+honoured the board's own quirks and let real bugs through while hardware failed; its recorded
+conclusion is the rule followed here.
+
+## A framework move now costs something on both sides
+
+Worth reading before anybody bumps `platformio.ini` past `espressif32@6.9.0` (ESP-IDF 5.3.1),
+because one half of this is invisible and was found by reading the IDF rather than by anything
+failing.
+
+**Moving to IDF 6 would silently break the access-point role.** On 5.3.1, `httpd_uri()` answers a
+WebSocket handshake and then calls the URI's handler, which is how `wsHandler`'s `HTTP_GET` block
+runs at all — and that block is where the caller's line is taken. IDF 6.1.0 ends that path with
+*"If the request is websocket handshake, then do not call the uri->handler"* and returns. Under that
+framework the block becomes dead code: no line, no connection line, and every keystroke dropped. The
+browser would say "connected" and the terminal would simply never do anything. **No compile error, no
+log line, no partial symptom, and the whole role gone.** The portable shape is to claim the line
+lazily on the first data frame instead; it is not done that way here because the handshake is also
+where the query string lives (which board, and the window size) and a data frame does not carry it.
+`web.cpp` says so at the handler.
+
+**And moving to IDF 6 would gain something real, which is why this is a trade rather than a
+warning.** OWE (RFC 8110, Wi-Fi CERTIFIED Enhanced Open) gives every client its own keys on a
+network with *no password at all* — exactly the open-AP case this firmware has to apologise for. It
+is behind `CONFIG_ESP_WIFI_ENABLE_WPA3_OWE_SOFTAP`, and checked against the frameworks installed on
+the development machine it is **absent in 5.3.1 and 5.5.3 and present in 6.1.0**; on 5.3.1 soft-AP
+does not merely lack it, `esp_wifi_types_generic.h` says the mode is unsupported there. It would also
+be partial rather than a fix, because a phone too old for OWE falls back to open in transition mode.
+
+So: a bump buys OWE for the open case and costs the handshake path. Do both pieces of work in the
+same change, or neither.
 
 ## Open questions for later phases
 

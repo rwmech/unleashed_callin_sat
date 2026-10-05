@@ -132,7 +132,8 @@ three ways and the run says which: a check fails, the code hangs, or ASan trips 
 only proof available for a guard whose whole job is to stop an out-of-bounds read, where what gets
 read is whatever is next in memory and no verdict need change.
 
-It has already earned it, five times, four of them against my own tests:
+`host/NOTES.md` has the reasoning at length, including what it has already caught. It has earned it
+five times, four of them against my own tests:
 
 - every compression-pointer test was a short packet, so with the pointer guard removed the `0xC0` ran
   off the end and a *different* guard refused it. They proved the packet was refused without proving

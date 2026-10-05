@@ -334,9 +334,29 @@ int peerIp(httpd_req_t* req) {
 // ---------------------------------------------------------------------------
 //  The static assets
 // ---------------------------------------------------------------------------
+// Does this request's PATH name this asset?
+//
+// req->uri holds the whole URI, query string and all: the IDF reads a
+// query out of it as `r->uri + field_data[UF_QUERY].off`. The handler was
+// still FOUND, because httpd_uri_match_simple is given the path's length
+// separately - so a plain strcmp against req->uri here compiled, looked
+// right, and 404'd every request that carried a query.
+//
+// That is the terminal: the portal links to /t?b=1, so tapping a board
+// would 404, the 404 handler would redirect to the portal, and the caller
+// would bounce between the two for ever with the whole access-point role
+// dead. The one thing phase 1 exists to prove, broken by a comparison that
+// reads as obviously correct.
+bool pathIs(const httpd_req_t* req, const char* path) {
+    const size_t n = strlen(path);
+    if (strncmp(req->uri, path, n) != 0) return false;
+    const char c = req->uri[n];
+    return c == 0 || c == '?' || c == '#';
+}
+
 esp_err_t assetGet(httpd_req_t* req) {
     for (const WebAsset& a : kWebAssets) {
-        if (strcmp(req->uri, a.path) != 0) continue;
+        if (!pathIs(req, a.path)) continue;
         httpd_resp_set_type(req, a.type);
         // Precompressed at build: there is no gzip in esp_http_server and
         // there will not be, so the header is set by hand.
@@ -450,13 +470,11 @@ void portalBody(httpd_req_t* req) {
             if (st == line::St::Idle) continue;
             const char* what = (st == line::St::Connecting) ? "calling"
                              : (st == line::St::Up) ? "on" : "closing";
-            const settings::Board* b = settings::board(static_cast<uint8_t>(l->board + 1));
             sayf(req, "<tr><td>Line %u</td><td>%s, %s, %ux%u, %u s</td></tr>",
                  i + 1, (l->src == line::Src::Wire) ? "wire" : "phone", what,
                  l->cols, l->rows,
                  static_cast<unsigned>((esp_timer_get_time() / 1000000) -
                                        (l->openedAt / 1000)));
-            (void)b;
         }
         say(req, "</table>");
     }

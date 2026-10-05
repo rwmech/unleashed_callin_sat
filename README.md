@@ -96,9 +96,9 @@ Measured at build on a bare ESP32-WROOM-32E:
 
 | | Bytes |
 |---|---|
-| Image | 845,312 of the 4,128,768 app partition (20.5%) |
+| Image | 851,024 of the 4,128,768 app partition (20.6%) |
 | The web payload inside it, gzipped | 76,029 |
-| Static DRAM | 45,808 of 180,736, so 134,928 free |
+| Static DRAM | 46,920 of 180,736, so 133,816 free |
 
 Flash is not the constraint and neither is static DRAM. **Internal heap with the access point up is
 the open question**, and it needs a board: see phase 2.

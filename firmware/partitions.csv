@@ -1,0 +1,14 @@
+# µnleashed gateway sat: the flash. One app and its settings, and there is
+# nothing else to keep: the portal and the browser terminal ride inside the
+# app image, so there is one binary, one flash command, and no partition
+# that can go out of step with the firmware that serves it.
+#
+# The settings (the roles, the access point's and the serial line's pages,
+# the board list, the setup password's hash) live in nvs, so a reflash keeps
+# a planted box configured.
+#
+# Copyright 2026 - Robert Mech. SPDX-License-Identifier: GPL-3.0-or-later
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x6000
+phy_init, data, phy,     0xf000,   0x1000
+factory,  app,  factory, 0x10000,  0x3F0000

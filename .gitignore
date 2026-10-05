@@ -25,6 +25,7 @@ bench.ini
 .vscode/
 firmware/sdkconfig.*
 !firmware/sdkconfig.defaults
+!firmware/sdkconfig.defaults.*
 firmware/managed_components/
 firmware/dependencies.lock
 firmware/build/

@@ -1,0 +1,23 @@
+# µnleashed gateway sat: the ESP32-WROVER layer, on top of sdkconfig.defaults.
+# Copyright 2026 - Robert Mech. SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The hedge. A WROOM is the floor and everything is sized against it; if
+# phase 2 reads the internal heap with the access point up and finds it
+# tight, this profile is the same money with 4 MB of PSRAM to put the
+# Wi-Fi and lwIP buffers in.
+#
+# Named here and not as sdkconfig.defaults.esp32, which would reach the
+# WROOM too and quietly build it expecting PSRAM.
+
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MEMTEST=n
+
+# No IGNORE_NOTFOUND: a WROVER image that boots on a WROOM and runs short of
+# heap at the worst moment is worse than one that says what it needs.
+CONFIG_SPIRAM_IGNORE_NOTFOUND=n
+
+# What PSRAM is for here: the Wi-Fi and lwIP buffers, which are most of what
+# an access point with a dozen stations costs.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768

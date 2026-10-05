@@ -1,0 +1,43 @@
+# µnleashed gateway sat: the browser terminal's third-party assets.
+#
+# firmware/tools/fetch_web.py fetches exactly this version from the npm
+# registry into the gitignored .web-cache/, checks it against the hash
+# below, and tools/mkweb.py gzips it into the app image. The package is NOT
+# redistributed in this repository, which is why there is a lock file rather
+# than a vendored blob.
+#
+# xterm.js is MIT (Copyright (c) 2017, The xterm.js authors; (c) 2014, 2016
+# SourceLair Limited / Fabrice Bellard). Its LICENSE travels into the image
+# beside it and the portal links to it, which is what MIT asks for.
+#
+# Why 5.5.0 and not 6.0.0, decided in phase 1 and worth the sentence:
+# 5.5.0's lib/xterm.js is 289,441 bytes and 67,245 gzipped; 6.0.0's is
+# 488,663 and 120,632. That is 53 KB of gzip, 44% of the whole web payload,
+# for ligatures and WebGL work a BBS does not draw. Against it: 6.0.1 was
+# never tagged despite the commits after 6.0.0, including a WriteBuffer
+# dispose-timer fix, so the stable choices are 5.5.0 or a 6.1 beta and the
+# stable 6.0.0 is arguably the worst of the three. Changing this is a line
+# here and a rebuild; measure the page again if it moves.
+#
+# Copyright 2026 - Robert Mech
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+package = @xterm/xterm
+version = 5.5.0
+
+# sha256 of the registry tarball. A fetch that does not match this is
+# refused, and the script prints what it got so a deliberate bump is one
+# paste. Measured 2026-10-05; the registry's own sha1 shasum for the same
+# tarball is 275fb8f6e14afa6e8a0c05d4ebc94523ff775396.
+sha256 = bd954fa721872170188cc5d7e83e88db3c83c9a18a4e8d24c2783d26491f59d2
+
+# What comes out of the tarball, and nothing else does.
+#   package/lib/xterm.js    289,441 bytes ->  67,245 gzipped
+#   package/css/xterm.css     5,559 bytes ->   2,071 gzipped
+#   package/LICENSE           1,261 bytes
+#
+# The fit and attach addons are deliberately NOT fetched. Attach is about
+# ten lines wiring onData to ws.send and fit is a cell measurement and a
+# resize call; both are in web/term.js, which also has to send the board a
+# NAWS telnet subnegotiation when the size changes, so there was nothing to
+# reuse anyway.

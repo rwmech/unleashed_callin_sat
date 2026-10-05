@@ -1,0 +1,64 @@
+# µnleashed gateway sat: the ESP-IDF settings every profile shares.
+# Copyright 2026 - Robert Mech. SPDX-License-Identifier: GPL-3.0-or-later
+#
+# A setting out of its Kconfig range is DISCARDED rather than clamped, and
+# the generated sdkconfig.<env> is the only place the truth shows. Check it
+# after changing anything here (the core's own lesson, which cost it a
+# silently halved socket budget).
+
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"
+CONFIG_BT_ENABLED=n
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_FREERTOS_HZ=1000
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=6144
+
+# A wedged gateway reboots rather than looking alive and answering nothing.
+# 30 s, not 5: the longest legitimate single pass here is a chunked send of
+# the terminal's assets off flash.
+CONFIG_ESP_TASK_WDT_PANIC=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=30
+
+# The small printf: about 70 KB of flash back, and no float in any format
+# string this firmware writes (the core's part 2 lesson).
+CONFIG_NEWLIB_NANO_FORMAT=y
+
+# ---------------------------------------------------------------------------
+#  The radio: an access point, and a station beside it when there is a
+#  router to join. Both, because the AP+STA case is a legal arrangement and
+#  the station is also how a phase 4 link peer follows a channel.
+# ---------------------------------------------------------------------------
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
+CONFIG_ESP_WIFI_ENTERPRISE_SUPPORT=n
+CONFIG_ESP_WIFI_STA_DISCONNECTED_PM_ENABLE=n
+
+# Wi-Fi buffers, cut from the defaults because internal RAM is what binds on
+# a part with no PSRAM and the traffic here is keystrokes and screens, not
+# throughput. The RX block-ack window follows the RX buffer count: the core
+# found that leaving them out of step wastes heap for nothing.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=6
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+
+# ---------------------------------------------------------------------------
+#  lwIP. Sixteen sockets is the hard maximum at IDF 5.3.1 (range 1 16);
+#  from 5.3.2 it is 253, which is a framework bump and its own job.
+#
+#  Who takes one: the DNS redirector 1, esp_http_server 3 internal, one per
+#  open HTTP or WebSocket client, and one per caller line's uplink. See
+#  src/web.cpp's own arithmetic, which is asserted rather than assumed.
+# ---------------------------------------------------------------------------
+CONFIG_LWIP_MAX_SOCKETS=16
+CONFIG_LWIP_IPV6=n
+CONFIG_LWIP_SO_RCVBUF=y
+
+# The HTTP server, and the one setting without which none of this works.
+CONFIG_HTTPD_WS_SUPPORT=y
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+
+# SHA-256 for the setup page's password, in hardware.
+CONFIG_MBEDTLS_HARDWARE_SHA=y

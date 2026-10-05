@@ -83,11 +83,28 @@ enum : uint8_t { FLOW_NONE = 0, FLOW_RTSCTS = 1 };
 enum : uint8_t { HANG_IDLE = 0, HANG_DCD = 1, HANG_DTR = 2 };
 
 struct Cfg {
-    // The roles. All three default off, so a freshly flashed gateway has no
-    // roles on and SAYS SO rather than looking broken: that is the state a
-    // box is in between the flash and the setup, and refusing it would be
-    // refusing the only way in.
-    bool ap      = false;
+    // THE ACCESS POINT DEFAULTS ON, and the other two off.
+    //
+    // It has to. The portal is the only way to configure a gateway, so with
+    // every role off a freshly flashed box boots, says "no roles are on",
+    // and there is NO WAY IN - not even a console, which is write-only
+    // here. The specification said `ap` defaults to no AND that the portal
+    // "is how a node is set up from nothing" AND that all-roles-off is the
+    // legal state "between flashing and setting up"; those three cannot
+    // all be true, and the default is the part that gives.
+    //
+    // THIS IS ONLY SAFE BECAUSE THE ACCESS POINT SHIPS PASSWORDED, and the
+    // two settings are now coupled. Under the original design the access
+    // point was open, and defaulting it on would have meant every freshly
+    // flashed gateway broadcasting an open network to anyone in range -
+    // a much worse decision than the one it looks like. What turns it into
+    // the obvious default is apPass below shipping as the published
+    // "unleashed" (Rob, 2026-10-05).
+    //
+    // So: ANYBODY WHO LATER MAKES THE ACCESS POINT OPEN BY DEFAULT MUST
+    // ALSO TURN THIS OFF, and then provide another way in. Meeting that
+    // here is the point of saying it.
+    bool ap      = true;
     bool termsrv = false;
     bool repeat  = false;
 

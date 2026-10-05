@@ -1074,9 +1074,17 @@ void setupForm(httpd_req_t* req, const char* problem, const char* done) {
              "<input type=\"hidden\" name=\"do\" value=\"save\">");
 
     say(req, "<h2>Roles</h2>");
+    // A note and not a refusal, because switching the access point off is a
+    // legitimate thing to want - a gateway that is only a terminal server
+    // does not need one. What is not legitimate is finding out afterwards
+    // that it was the only way in, so it is said at the moment of doing it.
+    // The same pattern as the board's own rows that warn before saving
+    // something that takes effect in an awkward way.
     yesno(req, "ap", "Access point", c.ap,
-          "An open Wi-Fi network and a portal, for phones. Switching this off "
-          "takes this page away with it: the console or a board is the way back.");
+          "A Wi-Fi network and this portal, for phones. THIS PAGE IS THE ONLY "
+          "WAY TO CHANGE A SETTING: switching it off leaves no way back in, "
+          "and a reflash will not help because these settings survive one. "
+          "Erasing them (pio run -t erase) is the only way back.");
     yesno(req, "termsrv", "Terminal server", c.termsrv,
           "A serial port carrying one terminal. It works at the same time as "
           "the access point.");

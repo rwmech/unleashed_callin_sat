@@ -137,13 +137,28 @@ void sayWhatIAm() {
              boards, boards == 1 ? "" : "s",
              static_cast<unsigned>(line::kLines), line::kLines == 1 ? "" : "s");
 
-    if (!c.ap && !c.termsrv) {
-        // Not an error, and said as a state rather than a fault. A box
-        // between its flash and its setup is exactly here, and the way in
-        // is this console.
-        ESP_LOGW(TAG, "no roles are on, so this gateway does nothing yet.");
-        ESP_LOGW(TAG, "switch on the access point and it will serve a portal "
-                      "that can set the rest up.");
+    // What this says has to be true in each state, and the first version
+    // was not: it told the operator to "switch on the access point", which
+    // is advice they cannot act on, because the portal is the only way to
+    // change a setting and the portal is what is off. A message asserting
+    // something the code cannot do is this project's own recurring shape.
+    if (c.ap) {
+        // The default, and the way in. The address is logged by ap.cpp.
+        ESP_LOGI(TAG, "set this gateway up at http://%s/ on its own Wi-Fi",
+                 ap::addr());
+    } else if (c.termsrv) {
+        ESP_LOGW(TAG, "the access point is off, so there is no portal and no "
+                      "way to change a setting from here.");
+        ESP_LOGW(TAG, "the serial line still works. To get back in, erase "
+                      "this gateway's settings: pio run -t erase");
+    } else {
+        // Legal, and a sysop may have meant it. Said as a state, with the
+        // honest way back rather than advice that cannot be taken.
+        ESP_LOGW(TAG, "every role is off, so this gateway does nothing.");
+        ESP_LOGW(TAG, "and there is no way to change that from here: the "
+                      "portal is the only way in and it is off.");
+        ESP_LOGW(TAG, "to start again: pio run -t erase, which clears the "
+                      "settings a reflash on its own would keep.");
     }
     if (!boards) {
         ESP_LOGW(TAG, "no boards are set up, so there is nothing for a caller "

@@ -122,3 +122,31 @@ form-body decoder and `pathIs`. They take bytes from the same strangers the DNS 
 `pathIs` in particular exists because of a bug worth remembering — `req->uri` holds the whole URI
 including the query string, so a `strcmp` against a path 404'd every request carrying one, which
 silently killed the entire access-point role while reading as obviously correct.
+
+## Known gaps, decided rather than overlooked
+
+**A console reader. Queued, not built — Rob's call, 2026-10-05.**
+
+The portal is the *only* way to change a setting on a gateway: the console is write-only, and there
+is no `set key value` path on UART0. That is why the access point defaults on (see `settings.h`,
+where the default and the reason sit together), and the two are coupled — the portal being the only
+way in is what makes defaulting it on necessary.
+
+The reasoning for leaving it out is sound and worth preserving: **a gateway on a post has no console
+at all**, so the portal is the right way in regardless, and building a second path first would be
+building for the case that does not happen. But the case that *does* happen is a gateway on a bench
+whose Wi-Fi settings got mangled — and for a board, that is exactly what USB and Improv are for.
+Without the equivalent here, the recovery story is `pio run -t erase`, because NVS survives an
+ordinary reflash and takes the broken settings with it.
+
+So this is a **decision to revisit, not an omission to rediscover**. If it is built, the shape is a
+few lines reading lines off UART0 and calling `settings::set` — which is already the one validator
+and already returns a sentence to print, so almost nothing new is needed. `host/test_settings.cpp`
+covers the hard half of it today.
+
+A smaller, cheaper partial worth weighing at the same time: the HTTP server only starts when the
+access point is up, so a gateway with the access point off but a station joined to a house router has
+no portal either, even though it is on a reachable network. Starting the server in that case would
+make the all-roles-off state recoverable over the house network for anybody who had set a password.
+It also widens what is served on the house LAN, which `web.cpp`'s `onOwnAp` already has an opinion
+about. Not done; named here so the trade is visible.

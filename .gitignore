@@ -1,0 +1,43 @@
+#
+# unleashed_callin_sat: what never goes in the repository.
+#
+# Copyright 2026 - Robert Mech
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+
+# Anything holding a network name or a password. The gateway sat keeps its
+# own settings in NVS on the device, so nothing here should ever need one;
+# these are the development escape hatches, ignored before any code existed
+# so there is no window in which one could be committed by accident.
+secrets.h
+secrets.ini
+secrets.txt
+firmware/src/secrets.h
+firmware/secrets.ini
+*.local.ini
+*.local.h
+*.local.txt
+*.local.md
+bench.ini
+
+# Build output
+.pio/
+.vscode/
+firmware/sdkconfig.*
+!firmware/sdkconfig.defaults
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/build/
+release/
+
+# Fetched at build: the browser terminal's third-party assets (MIT, pinned
+# by firmware/web/xterm.lock) and the generated header they are baked into.
+firmware/.web-cache/
+firmware/src/webassets/
+
+# Fetched at build from the core, from phase 3 on (the link engine).
+firmware/core/
+firmware/.core-cache/
+
+*.pyc
+__pycache__/

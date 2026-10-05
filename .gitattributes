@@ -1,0 +1,6 @@
+# Text is stored with LF whatever the checkout machine does.
+# Copyright 2026 - Robert Mech. SPDX-License-Identifier: GPL-3.0-or-later
+* text=auto eol=lf
+*.bin binary
+*.gz binary
+*.png binary

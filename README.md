@@ -40,12 +40,19 @@ them) is phase 4 and wants the board's CALLIN work in firmware 1.2.3 under it.
 
 ## Encryption
 
-**The Wi-Fi has a password by default, so every hop is encrypted**: CCMP from the phone to the
-gateway, and the µnleashed link's own AES-128-CCM from the gateway to the board. The password ships
-as `unleashed` and is **published rather than secret** — print it on the sign beside the network's
-name. What it buys is not privacy from the caller, it is CCMP on the air, so a passer-by with a
-laptop reads nothing. Because every hop is encrypted, it makes no difference to anyone that the
-portal is plain HTTP.
+**The Wi-Fi has a password by default, so the hop from the phone is encrypted.** WPA2, which on this
+framework means CCMP, between the phone and the gateway. The password ships as `unleashed` and is
+**published rather than secret** — print it on the sign beside the network's name. What it buys is
+not privacy from the caller, it is CCMP on the air, so a passer-by with a laptop reads nothing. And
+because that hop is encrypted, it makes no difference to anybody that the portal is plain HTTP, in
+the same way it makes no difference on your own router's settings page.
+
+**The second hop, gateway to board, is plain telnet in phase 1**, and what protects it is whichever
+Wi-Fi carries it rather than anything this firmware does. On the recommended shape — the board joined
+to this gateway's own access point — that is the same WPA2, so both hops are CCMP. On a house router
+it is that router's WPA2. On an open network it is nothing. From phase 4 the second hop is the
+µnleashed link's own AES-128-CCM over ESP-NOW, sealed end to end and needing no Wi-Fi between them at
+all; until then, do not read "sealed" into it.
 
 **Clearing the password gives an open network, which is the exception and not the default.** Then
 anyone in radio range can read every keystroke and every screen, a password included, and the portal

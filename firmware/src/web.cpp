@@ -42,6 +42,7 @@
 #include "ap.h"
 #include "board.h"
 #include "dns.h"
+#include "elapsed.h"
 #include "line.h"
 #include "settings.h"
 #include "version.h"
@@ -253,12 +254,11 @@ const line::SourceOps kWsOps = { wsRoom, wsSend, wsClose };
 // ---------------------------------------------------------------------------
 //  Small helpers
 // ---------------------------------------------------------------------------
-uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
-
-uint32_t since(uint32_t now, uint32_t at) {
-    const uint32_t d = now - at;
-    return (d > 0xFFFF0000u) ? 0u : d;
-}
+// ms() and since() are when::'s, in elapsed.h: one rule in one place,
+// because three copies in three files is the drift the core's own
+// plat::since exists to prevent.
+using when::ms;
+using when::since;
 
 // Everything a sysop typed into a setting reaches a page, and
 // printableOnly() allows < > & and ", so every one of them is escaped
@@ -396,10 +396,19 @@ void portalBody(httpd_req_t* req) {
     // overclaim that had to be corrected once already.
     if (ap::secure()) {
         // The default, and it is short because there is nothing to
-        // apologise for: CCMP from the phone to here, and the link's own
-        // AES-128-CCM from here to the board. Every hop is encrypted, so
-        // whether this page is HTTP or HTTPS makes no difference to
-        // anybody and is not worth a caller's attention.
+        // apologise for: WPA2, so CCMP between the phone and this box.
+        // Because THAT hop is encrypted, whether this page is HTTP or
+        // HTTPS makes no difference to anybody and is not worth a
+        // caller's attention.
+        //
+        // The copy says "this network", and it means this one hop, which
+        // is what it can honestly claim. It does NOT say every hop: in
+        // phase 1 the second hop is plain telnet, protected by whichever
+        // Wi-Fi carries it rather than by anything this firmware does. An
+        // earlier version of this comment claimed the link's own
+        // AES-128-CCM here, which does not exist until phase 4 - the same
+        // overclaim the README had to have corrected, two lines under a
+        // note about overclaiming.
         say(req, "<div class=\"open\" style=\"border-left-color:#5fd38d\">"
                  "<strong>This network is encrypted.</strong> Nobody nearby can "
                  "read what you type or what you see. Its password is printed "
@@ -648,20 +657,25 @@ esp_err_t wsHandler(httpd_req_t* req) {
         // because in this phase the board cannot tell a gateway caller
         // from any other telnet caller: the uplink is an ordinary socket.
         // From phase 3 the board says it itself and this goes.
-        // One line per mode, both inside 39 columns with the "--> " that
-        // the board's own markedLine adds, and both following the board's
-        // existing pair ("This connection is not securely encrypted" /
-        // "... is securely encrypted") rather than inventing a style.
-        // Final copy is explain's.
+        // One line per mode, and the two are deliberately parallel: the
+        // same sentence with one word changed, so a caller who has seen
+        // the other one reads the difference rather than the words.
+        //
+        // The 40-column forms are 33 characters, which with the "--> " the
+        // board's own markedLine adds is 37 of 39. The phrase is the
+        // board's own ("This connection is not securely encrypted" /
+        // "... is securely encrypted"), because inventing a third style
+        // for the same fact is how a board ends up with three. Final copy
+        // is explain's.
         const char* warn;
         if (ap::secure()) {
             warn = (cols >= 80)
-                ? "--> You came in over a password-protected Wi-Fi gateway, encrypted\r\n"
-                : "--> Private Wi-Fi gateway, encrypted\r\n";     // 32 columns
+                ? "--> You came in over a Wi-Fi gateway, securely encrypted\r\n"
+                : "--> Wi-Fi gateway, securely encrypted\r\n";    // 33 characters
         } else {
             warn = (cols >= 80)
                 ? "--> You came in over an open Wi-Fi gateway, not encrypted\r\n"
-                : "--> Open Wi-Fi gateway, not encrypted\r\n";    // 33 columns
+                : "--> Open Wi-Fi gateway, not encrypted\r\n";    // 33 characters
         }
         httpd_ws_frame_t f = {};
         f.type    = HTTPD_WS_TYPE_BINARY;

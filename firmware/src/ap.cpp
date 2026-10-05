@@ -39,6 +39,7 @@
 #include "lwip/inet.h"
 #include "lwip/ip_addr.h"
 
+#include "elapsed.h"
 #include "settings.h"
 
 namespace ap {
@@ -67,12 +68,11 @@ std::atomic<uint8_t> g_phones{0};
 std::atomic<uint32_t> g_redialAt{0};
 std::atomic<uint32_t> g_redialGap{0};
 
-uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
-
-uint32_t since(uint32_t now, uint32_t at) {
-    const uint32_t d = now - at;
-    return (d > 0xFFFF0000u) ? 0u : d;
-}
+// ms() and since() are when::'s, in elapsed.h: one rule in one place,
+// because three copies in three files is the drift the core's own
+// plat::since exists to prevent.
+using when::ms;
+using when::since;
 
 // Into one of the driver's fixed fields, terminated, truncating if it must.
 //

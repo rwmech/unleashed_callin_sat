@@ -56,6 +56,7 @@
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 
+#include "elapsed.h"
 #include "settings.h"
 
 namespace line {
@@ -69,16 +70,11 @@ constexpr uint32_t kConnectMs = 10000;   // long enough for a board that is busy
 constexpr uint32_t kPassMs    = 20;      // the pump's own tick
 constexpr size_t   kReadMax   = 512;     // off the uplink in one pass
 
-uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
-
-// Elapsed time, always unsigned and always this way round. A stamp taken on
-// another task can be a few milliseconds AHEAD of this pass's `now`, and an
-// unsigned subtraction then reads as 49 days. The core paid for this rule
-// twice; here it is one function.
-uint32_t since(uint32_t now, uint32_t at) {
-    const uint32_t d = now - at;
-    return (d > 0xFFFF0000u) ? 0u : d;
-}
+// ms() and since() are when::'s, in elapsed.h: one rule in one place,
+// because three copies in three files is the drift the core's own
+// plat::since exists to prevent.
+using when::ms;
+using when::since;
 
 void say(Line& l, const char* why) {
     if (!l.why[0] && why) snprintf(l.why, sizeof l.why, "%s", why);

@@ -27,10 +27,25 @@
 //               router (and the router settles it). Phase 4 pairs over
 //               ESP-NOW and then a channel that differs is refused by name.
 //
-//               The access point is OPEN, with no password, deliberately:
-//               a caller at a fairground has nothing to type and a portal
-//               behind a password is not a front door. What that costs is
-//               said plainly on the portal rather than hidden.
+//               THE ACCESS POINT IS PASSWORDED BY DEFAULT (Rob,
+//               2026-10-05), and that settles the whole security story:
+//               WPA2-PSK, where the pinned IDF overwrites the pairwise
+//               cipher with CCMP for us, so every hop from the phone to
+//               the board is encrypted and the portal being plain HTTP
+//               makes no difference to anybody.
+//
+//               The default password is PUBLISHED, not secret: the same
+//               word as the board's own published sysop default, meant to
+//               be printed on the sign beside the network's name. What it
+//               buys is CCMP on the air rather than privacy from callers.
+//
+//               Blank is still allowed and is the deliberate exception: an
+//               open network, where anyone in range reads everything, said
+//               plainly on the portal and in the board's own connection
+//               line rather than hidden. The certificate argument belongs
+//               ONLY there, because it is the only place anybody would
+//               reach for HTTPS to fix things. Running the two cases
+//               together is what produced an overclaim once already.
 //
 // See also:     dns.h (every name answered with this box), web.h (the
 //               portal), settings.h (ap_*, net_*)
@@ -70,6 +85,10 @@ void tick();
 
 // What the access point is, for the portal and the console.
 bool        apUp();
+// Has a password, so WPA2 and the link is encrypted. This is what the
+// portal's copy and the board's connection line both key off, so there is
+// one answer to "is this hop readable" rather than two that could differ.
+bool        secure();
 const char* ssid();
 const char* addr();          // dotted, the address a phone reaches us on
 uint8_t     channel();       // what the radio actually settled on

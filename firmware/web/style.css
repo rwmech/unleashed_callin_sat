@@ -1,0 +1,122 @@
+/* µnleashed gateway sat: the portal and the terminal.
+ * Copyright 2026 - Robert Mech. SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * Phone first, because every caller this exists for is holding one. No
+ * webfont: a font that has to be fetched is a font that cannot be fetched
+ * on a network with no internet, which is every network this runs on.
+ */
+:root {
+  --bg: #11131a;
+  --panel: #1a1d26;
+  --edge: #2b2f3d;
+  --ink: #d7dae3;
+  --dim: #8b91a3;
+  --key: #ffc14d;      /* keys and handles are amber, as the board's theme */
+  --ok: #5fd38d;
+  --warn: #ffb02e;
+  --risk: #ff6b6b;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.wrap { max-width: 34rem; margin: 0 auto; padding: 1.25rem 16px 3rem; }
+h1 { font-size: 1.4rem; margin: 0 0 .15rem; letter-spacing: .01em; }
+h1 .mu { color: var(--key); }
+.sub { color: var(--dim); font-size: .85rem; margin: 0 0 1.25rem; }
+h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .09em;
+     color: var(--dim); margin: 1.75rem 0 .6rem; font-weight: 600; }
+
+.open {
+  border: 1px solid var(--edge);
+  border-left: 3px solid var(--warn);
+  background: var(--panel);
+  border-radius: 6px;
+  padding: .8rem .9rem;
+  font-size: .9rem;
+}
+.open strong { color: var(--warn); font-weight: 600; }
+
+.board {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  border: 1px solid var(--edge);
+  background: var(--panel);
+  border-radius: 6px;
+  padding: .7rem .9rem;
+  margin-bottom: .55rem;
+  text-decoration: none;
+  color: inherit;
+}
+.board .nm { font-weight: 600; color: var(--key); }
+.board .note { color: var(--dim); font-size: .82rem; }
+.board .go { margin-left: auto; color: var(--ok); font-size: .85rem; white-space: nowrap; }
+.board.down { opacity: .55; }
+.board.down .go { color: var(--dim); }
+.none { color: var(--dim); font-size: .9rem; }
+
+.fall {
+  color: var(--dim);
+  font-size: .85rem;
+  border-top: 1px solid var(--edge);
+  margin-top: 2rem;
+  padding-top: .9rem;
+}
+.fall code { color: var(--ink); background: var(--panel);
+             padding: .1rem .3rem; border-radius: 3px; }
+.fall a { color: var(--dim); }
+
+/* Forms: the setup page. */
+label { display: block; margin: .9rem 0 .2rem; font-size: .85rem; color: var(--dim); }
+input[type=text], input[type=password], input[type=number], select {
+  width: 100%;
+  padding: .55rem .6rem;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--edge);
+  border-radius: 5px;
+  font: inherit;
+  font-size: .95rem;
+}
+.hint { color: var(--dim); font-size: .78rem; margin: .2rem 0 0; }
+button {
+  margin-top: 1.4rem;
+  padding: .6rem 1.1rem;
+  background: var(--key);
+  color: #1a1400;
+  border: 0;
+  border-radius: 5px;
+  font: inherit;
+  font-weight: 600;
+}
+.bad { color: var(--risk); font-size: .88rem; }
+.good { color: var(--ok); font-size: .88rem; }
+table.kv { width: 100%; border-collapse: collapse; font-size: .88rem; }
+table.kv td { padding: .3rem 0; border-bottom: 1px solid var(--edge); }
+table.kv td:first-child { color: var(--dim); width: 45%; }
+
+/* The terminal page is its own thing: a frame round the glass and a foot,
+ * and nothing else, because a terminal that shares a page with navigation
+ * is a website with a terminal in it. */
+body.term { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+#glass { flex: 1 1 auto; min-height: 0; padding: 4px; }
+#glass .xterm { height: 100%; }
+#foot {
+  flex: 0 0 auto;
+  padding: .4rem 10px;
+  font-size: .78rem;
+  color: var(--dim);
+  border-top: 1px solid var(--edge);
+  display: flex;
+  gap: .8rem;
+  align-items: baseline;
+}
+#foot a { color: var(--dim); }
+#state.up { color: var(--ok); }
+#state.gone { color: var(--risk); }

@@ -1,43 +1,60 @@
 # µnleashed gateway sat: the browser terminal's third-party assets.
 #
-# firmware/tools/fetch_web.py fetches exactly this version from the npm
-# registry into the gitignored .web-cache/, checks it against the hash
-# below, and tools/mkweb.py gzips it into the app image. The package is NOT
-# redistributed in this repository, which is why there is a lock file rather
-# than a vendored blob.
+# firmware/tools/fetch_web.py fetches exactly these versions from the npm
+# registry into the gitignored .web-cache/, refuses a tarball whose SHA-256
+# is not the one named here, and tools/mkweb.py gzips them into the app
+# image. Nothing third-party is redistributed in this repository, which is
+# why there is a lock file rather than a vendored blob.
 #
-# xterm.js is MIT (Copyright (c) 2017, The xterm.js authors; (c) 2014, 2016
-# SourceLair Limited / Fabrice Bellard). Its LICENSE travels into the image
-# beside it and the portal links to it, which is what MIT asks for.
+# Both packages are MIT. Their LICENSE files travel into the image and the
+# portal links to them at /licence, which is what MIT asks for.
 #
-# Why 5.5.0 and not 6.0.0, decided in phase 1 and worth the sentence:
-# 5.5.0's lib/xterm.js is 289,441 bytes and 67,245 gzipped; 6.0.0's is
-# 488,663 and 120,632. That is 53 KB of gzip, 44% of the whole web payload,
-# for ligatures and WebGL work a BBS does not draw. Against it: 6.0.1 was
-# never tagged despite the commits after 6.0.0, including a WriteBuffer
-# dispose-timer fix, so the stable choices are 5.5.0 or a 6.1 beta and the
-# stable 6.0.0 is arguably the worst of the three. Changing this is a line
-# here and a rebuild; measure the page again if it moves.
+# Format: a block per package. `package` starts a block; `files` maps a path
+# inside the tarball to the name it is cached under, and nothing else is
+# ever extracted, so a package that grows a postinstall script or a binary
+# cannot bring it in here.
 #
 # Copyright 2026 - Robert Mech
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+# ---------------------------------------------------------------------------
+#  The terminal.
+#
+#  Why 5.5.0 and not 6.0.0, decided in phase 1 and worth the sentence:
+#  5.5.0's lib/xterm.js is 289,441 bytes and 67,245 gzipped; 6.0.0's is
+#  488,663 and 120,632. That is 53 KB of gzip, most of the whole web
+#  payload, for ligatures and WebGL work a BBS does not draw. Against it:
+#  6.0.1 was never tagged despite the commits after 6.0.0, including a
+#  WriteBuffer dispose-timer fix, so the stable choices are 5.5.0 or a 6.1
+#  beta and the stable 6.0.0 is arguably the worst of the three. Changing
+#  this is a line here and a rebuild; measure the page again if it moves.
+#
+#  Measured 2026-10-05. The registry's own sha1 for the same tarball is
+#  275fb8f6e14afa6e8a0c05d4ebc94523ff775396.
+#    package/lib/xterm.js   289,441 bytes ->  67,245 gzipped
+#    package/css/xterm.css    5,559 bytes ->   2,071 gzipped
+# ---------------------------------------------------------------------------
 package = @xterm/xterm
 version = 5.5.0
+sha256  = bd954fa721872170188cc5d7e83e88db3c83c9a18a4e8d24c2783d26491f59d2
+files   = package/lib/xterm.js:xterm.js, package/css/xterm.css:xterm.css, package/LICENSE:xterm.LICENSE
 
-# sha256 of the registry tarball. A fetch that does not match this is
-# refused, and the script prints what it got so a deliberate bump is one
-# paste. Measured 2026-10-05; the registry's own sha1 shasum for the same
-# tarball is 275fb8f6e14afa6e8a0c05d4ebc94523ff775396.
-sha256 = bd954fa721872170188cc5d7e83e88db3c83c9a18a4e8d24c2783d26491f59d2
-
-# What comes out of the tarball, and nothing else does.
-#   package/lib/xterm.js    289,441 bytes ->  67,245 gzipped
-#   package/css/xterm.css     5,559 bytes ->   2,071 gzipped
-#   package/LICENSE           1,261 bytes
+# ---------------------------------------------------------------------------
+#  The fit addon: 1,497 bytes, 641 gzipped, and 0.10.0 is the release whose
+#  peer dependency is xterm ^5.0.0 (0.11.0 is for 6.x).
 #
-# The fit and attach addons are deliberately NOT fetched. Attach is about
-# ten lines wiring onData to ws.send and fit is a cell measurement and a
-# resize call; both are in web/term.js, which also has to send the board a
-# NAWS telnet subnegotiation when the size changes, so there was nothing to
-# reuse anyway.
+#  Fetched rather than written, which is the opposite call from the attach
+#  addon. Attach is ten lines wiring onData to ws.send, so web/term.js does
+#  it and also sends the board a NAWS window size, which no addon would
+#  have done. Fit is not ten lines: it asks xterm for the cell size xterm
+#  itself measured, and a cell measured independently is a cell that can
+#  differ by a fraction and wrap every line on the glass. 641 bytes buys
+#  the one measurement that cannot disagree with the renderer.
+#
+#  Measured 2026-10-05; the registry's sha1 is
+#  bebf87fadd74e3af30fdcdeef47030e2592c6f55.
+# ---------------------------------------------------------------------------
+package = @xterm/addon-fit
+version = 0.10.0
+sha256  = 917ac44972453d5eed52edc1e50260c76398ce48cf2290c2e60671102bba0b33
+files   = package/lib/addon-fit.js:fit.js, package/LICENSE:fit.LICENSE

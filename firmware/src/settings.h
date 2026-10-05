@@ -91,8 +91,37 @@ struct Cfg {
     bool termsrv = false;
     bool repeat  = false;
 
-    // The access point
-    char     apSsid[33]  = {0};      // blank: this gateway's own name
+    // The access point.
+    //
+    // THE ACCESS POINT IS PASSWORDED BY DEFAULT (Rob, 2026-10-05), and
+    // "unleashed" is a PUBLISHED default, the same word as the board's own
+    // published sysop password. It is meant to be printed on the sign at
+    // the fairground beside the network's name, not kept secret: what it
+    // buys is CCMP on the air, so a passer-by with a laptop reads nothing,
+    // while a caller still only has to read a sign.
+    //
+    // Nine characters, which clears WPA2's eight-character minimum. A
+    // shorter default later would not, so check before changing it.
+    //
+    // The authmode follows the password, and the pinned IDF gives exactly
+    // two usable choices with nothing in between: WPA2_PSK, where the
+    // driver overwrites the pairwise cipher with CCMP for us
+    // (esp_wifi_types_generic.h:339), or open. OWE, which would encrypt a
+    // network with no password at all, is not merely missing on 5.3.1: the
+    // same comment says soft-AP does not support it.
+    //
+    // BLANK is still allowed and is now the deliberate exception rather
+    // than the default: a sysop who clears it gets an open network and the
+    // honest line with it.
+    //
+    // A password of 1 to 7 characters is REFUSED rather than quietly
+    // becoming an open network. Silently becoming open is the exact shape
+    // of the trap the core already recorded on its own Wi-Fi page, where a
+    // changed network name with an untouched password saved an SSID with no
+    // key and the next boot tried it as an open network. The sysop is told
+    // instead.
+    char     apSsid[33]  = {0};          // blank: this gateway's own name
+    char     apPass[65]  = "unleashed";  // blank: open; set: WPA2 with CCMP
     char     apAddr[16]  = "172.16.0.1";
     uint8_t  apChan      = 0;        // 0: follow the board (blank on the form)
     uint8_t  apMax       = 15;

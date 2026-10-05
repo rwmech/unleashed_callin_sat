@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<!-- µnleashed gateway sat: the browser terminal.
+     Copyright 2026 - Robert Mech. SPDX-License-Identifier: GPL-3.0-or-later
+
+     Static, so it is one gzipped blob in the app image. Which board it
+     calls comes from the query string (?b=n), which is also what a portal
+     link carries, so this page has nothing rendered into it.
+
+     Loaded only when somebody taps a board: xterm is most of the payload
+     and the portal page is what every phone that joins fetches. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Terminal</title>
+<link rel="stylesheet" href="/x.css">
+<link rel="stylesheet" href="/s.css">
+</head>
+<body class="term">
+<div id="glass"></div>
+<div id="foot">
+  <span id="state">connecting</span>
+  <span id="size"></span>
+  <a href="/">boards</a>
+</div>
+<script src="/x.js"></script>
+<script src="/f.js"></script>
+<script src="/t.js"></script>
+</body>
+</html>

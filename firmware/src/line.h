@@ -134,6 +134,15 @@ struct Line {
     std::atomic<bool> claimed{false};   // taken out of the pool
     std::atomic<St>   st{St::Idle};
 
+    // Which caller this line is on, counted up at every open() and never
+    // reused. A source runs on another task and holds its line across
+    // passes, and lines come from a STATIC POOL: without this, a source
+    // that is a moment late closing a line that has already been given to
+    // the next caller closes the wrong caller's line. Every public call
+    // below takes a Handle and checks this, which is the same answer the
+    // core reached with Session::call.
+    std::atomic<uint32_t> serial{0};
+
     Src src = Src::None;
     Up  up  = Up::None;
 
@@ -170,6 +179,16 @@ struct Line {
     char why[40] = {0};                 // why it closed, for the console and the page
 };
 
+// What a source holds instead of a pointer. `l` is nullptr when there is
+// no line; `serial` is which caller it was, so a stale handle is refused
+// rather than acted on.
+struct Handle {
+    Line*    l      = nullptr;
+    uint32_t serial = 0;
+    bool set() const { return l != nullptr; }
+    void clear() { l = nullptr; serial = 0; }
+};
+
 // ---------------------------------------------------------------------------
 //  The pool
 // ---------------------------------------------------------------------------
@@ -177,27 +196,34 @@ struct Line {
 // Starts the pump task. Called once, before any role.
 bool begin();
 
-// Takes a free line, or nullptr when every one is busy (which is the
-// gateway's own "all lines are busy", distinct from the board's).
-// The line is reset here, so nothing from its last caller survives.
-Line* open(Src src, const SourceOps* ops, void* ctx, uint8_t board,
-           uint16_t cols, uint16_t rows);
+// Takes a free line, or an unset Handle when every one is busy (which is
+// the GATEWAY's own "all lines are busy", a different fact from the
+// board's and worth saying differently).
+//
+// The line is reset here and not in reap(), so nothing from its last
+// caller survives.
+Handle open(Src src, const SourceOps* ops, void* ctx, uint8_t board,
+            uint16_t cols, uint16_t rows);
 
-// Gives a line back. Safe from any task and safe twice. The line is not
+// Gives a line back. Safe from any task, safe twice, and safe on a handle
+// whose line has already been given to somebody else. The line is not
 // freed here: the pump reaps it, because only the pump may touch a socket.
 //
 // close()           the source is still there and will be told why.
 // closeFromSource() the source has gone; its close() is not called.
-void close(Line* l, const char* why);
-void closeFromSource(Line* l, const char* why);
+void close(Handle h, const char* why);
+void closeFromSource(Handle h, const char* why);
 
 // Called by a source when the caller has typed something. Returns what was
 // taken; a short return is backpressure and the source should offer the
 // rest in a moment rather than dropping it.
-size_t fromCaller(Line* l, const uint8_t* p, size_t n);
+size_t fromCaller(Handle h, const uint8_t* p, size_t n);
 
 // The caller's terminal changed size. Cheap and may be called often.
-void resized(Line* l, uint16_t cols, uint16_t rows);
+void resized(Handle h, uint16_t cols, uint16_t rows);
+
+// Is this handle still the caller it was opened for?
+bool live(Handle h);
 
 // How many lines are busy, for the portal and the console.
 uint8_t busy();

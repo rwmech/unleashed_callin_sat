@@ -186,6 +186,7 @@ bool begin() {
     getBool(h, "repeat", g_cfg.repeat);
 
     getStr(h, "ap_ssid", g_cfg.apSsid, sizeof g_cfg.apSsid);
+    getStr(h, "ap_pass", g_cfg.apPass, sizeof g_cfg.apPass);
     getStr(h, "ap_addr", g_cfg.apAddr, sizeof g_cfg.apAddr);
     getU8(h, "ap_chan", g_cfg.apChan);
     getU8(h, "ap_max", g_cfg.apMax);
@@ -303,8 +304,23 @@ const char* set(const char* key, const char* value) {
     if (!strcmp(key, "ap_ssid")) {
         if (strlen(value) > 32) return "a Wi-Fi name is at most 32 characters";
         if (!printableOnly(value)) return "plain characters only in a Wi-Fi name";
+        if (strcmp(value, g_cfg.apSsid) != 0) g_restart = true;
         copyStr(g_cfg.apSsid, sizeof g_cfg.apSsid, value);
-        g_restart = true;
+        return nullptr;
+    }
+    if (!strcmp(key, "ap_pass")) {
+        // Blank is an open network, deliberately and not by accident: the
+        // fairground case needs one. A short one is refused by name, with
+        // WPA2's own minimum in the sentence, rather than quietly opening
+        // the network the sysop just tried to close.
+        const size_t n2 = strlen(value);
+        if (n2 && n2 < 8) {
+            return "at least 8 characters, or blank for an open network";
+        }
+        if (n2 > 63) return "a Wi-Fi password is at most 63 characters";
+        if (n2 && !printableOnly(value)) return "plain characters only in a Wi-Fi password";
+        if (strcmp(value, g_cfg.apPass) != 0) g_restart = true;
+        copyStr(g_cfg.apPass, sizeof g_cfg.apPass, value);
         return nullptr;
     }
     if (!strcmp(key, "ap_addr")) {
@@ -316,39 +332,43 @@ const char* set(const char* key, const char* value) {
         if (last && (!strcmp(last, ".0") || !strcmp(last, ".255"))) {
             return "not a network or broadcast address";
         }
+        if (strcmp(value, g_cfg.apAddr) != 0) g_restart = true;
         copyStr(g_cfg.apAddr, sizeof g_cfg.apAddr, value);
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "ap_chan")) {
-        if (!*value) { g_cfg.apChan = 0; g_restart = true; return nullptr; }  // blank follows the board
+        if (!*value) {                                    // blank follows the board
+            if (g_cfg.apChan != 0) g_restart = true;
+            g_cfg.apChan = 0;
+            return nullptr;
+        }
         if (!allDigits(value, n) || n < 1 || n > 13) return "a channel from 1 to 13, or blank";
         // The one hard impossibility in the whole design: one radio cannot
         // serve two channels. In phase 1 there is no pairing yet, so there
         // is no board channel to clash with and a number is simply taken.
         // Phase 4 refuses a number that differs from the boards' channel,
         // and names the channel they are on.
+        if (g_cfg.apChan != static_cast<uint8_t>(n)) g_restart = true;
         g_cfg.apChan = static_cast<uint8_t>(n);
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "ap_max")) {
         if (!allDigits(value, n) || n < 1 || n > 15) return "1 to 15 phones";
+        if (g_cfg.apMax != static_cast<uint8_t>(n)) g_restart = true;
         g_cfg.apMax = static_cast<uint8_t>(n);
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "ap_beacon")) {
         if (!allDigits(value, n) || n < 100 || n > 1000) return "100 to 1000";
         if (n % 100 != 0) return "a multiple of 100";
+        if (g_cfg.apBeacon != static_cast<uint16_t>(n)) g_restart = true;
         g_cfg.apBeacon = static_cast<uint16_t>(n);
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "ap_dtim")) {
         if (!allDigits(value, n) || n < 1 || n > 3) return "1 to 3";
+        if (g_cfg.apDtim != static_cast<uint8_t>(n)) g_restart = true;
         g_cfg.apDtim = static_cast<uint8_t>(n);
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "ap_probe")) {
@@ -369,14 +389,14 @@ const char* set(const char* key, const char* value) {
             // thing. Saying it is what stops it being a surprise.
             ESP_LOGW(TAG, "net_ssid set with no password: joining as an open network");
         }
+        if (strcmp(value, g_cfg.netSsid) != 0) g_restart = true;
         copyStr(g_cfg.netSsid, sizeof g_cfg.netSsid, value);
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "net_pass")) {
         if (strlen(value) > 63) return "a Wi-Fi password is at most 63 characters";
+        if (strcmp(value, g_cfg.netPass) != 0) g_restart = true;
         copyStr(g_cfg.netPass, sizeof g_cfg.netPass, value);
-        g_restart = true;
         return nullptr;
     }
 
@@ -390,10 +410,10 @@ const char* set(const char* key, const char* value) {
         const bool out = (key[4] == 't');          // ser_tx drives; rx and btn read
         const char* p = board::pinProblem(pin, out);
         if (p) return p;
-        if (key[4] == 't' && key[5] == 'x') g_cfg.serTx = static_cast<int8_t>(pin);
-        else if (key[4] == 'r') g_cfg.serRx = static_cast<int8_t>(pin);
-        else g_cfg.serBtn = static_cast<int8_t>(pin);
-        g_restart = true;
+        int8_t* slot = (key[4] == 't' && key[5] == 'x') ? &g_cfg.serTx
+                     : (key[4] == 'r') ? &g_cfg.serRx : &g_cfg.serBtn;
+        if (*slot != static_cast<int8_t>(pin)) g_restart = true;
+        *slot = static_cast<int8_t>(pin);
         return nullptr;
     }
     if (!strcmp(key, "ser_baud")) {
@@ -401,8 +421,8 @@ const char* set(const char* key, const char* value) {
         if (!allDigits(value, n)) return "a speed from the list";
         for (uint32_t b : kBauds) {
             if (static_cast<uint32_t>(n) == b) {
+                if (g_cfg.serBaud != b) g_restart = true;
                 g_cfg.serBaud = b;
-                g_restart = true;
                 return nullptr;
             }
         }
@@ -413,7 +433,6 @@ const char* set(const char* key, const char* value) {
         else if (!strcmp(value, "7E1")) g_cfg.serFmt = FMT_7E1;
         else if (!strcmp(value, "7N1")) g_cfg.serFmt = FMT_7N1;
         else return "8N1, 7E1 or 7N1";
-        g_restart = true;
         return nullptr;
     }
     if (!strcmp(key, "ser_flow")) {
@@ -427,7 +446,7 @@ const char* set(const char* key, const char* value) {
         return nullptr;
     }
     if (!strcmp(key, "ser_hang")) {
-        if (!strcmp(value, "idle")) { g_cfg.serHang = HANG_IDLE; g_restart = true; return nullptr; }
+        if (!strcmp(value, "idle")) { g_cfg.serHang = HANG_IDLE; return nullptr; }
         // Carrier detect and DTR each need a pin this build has no row for,
         // and a hang-up method that cannot see its pin is a line that never
         // hangs up. Refused by name, with the reason.
@@ -516,6 +535,7 @@ bool save() {
     nvs_set_u8(h, "repeat", g_cfg.repeat ? 1 : 0);
 
     nvs_set_str(h, "ap_ssid", g_cfg.apSsid);
+    nvs_set_str(h, "ap_pass", g_cfg.apPass);
     nvs_set_str(h, "ap_addr", g_cfg.apAddr);
     nvs_set_u8(h, "ap_chan", g_cfg.apChan);
     nvs_set_u8(h, "ap_max", g_cfg.apMax);

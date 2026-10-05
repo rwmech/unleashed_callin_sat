@@ -49,6 +49,7 @@ esp_netif_t* g_ap  = nullptr;
 esp_netif_t* g_sta = nullptr;
 
 bool  g_apUp   = false;
+bool  g_secure = false;      // the access point has a password: WPA2
 bool  g_staUp  = false;
 char  g_ssid[33] = {0};
 char  g_addr[16] = {0};
@@ -66,6 +67,20 @@ uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 uint32_t since(uint32_t now, uint32_t at) {
     const uint32_t d = now - at;
     return (d > 0xFFFF0000u) ? 0u : d;
+}
+
+// Into one of the driver's fixed fields, terminated, truncating if it must.
+//
+// memcpy and not snprintf: GCC 13 refuses snprintf("%s") into a buffer that
+// the source could exactly fill, as -Wformat-truncation, and it is right to
+// — the truncation would be silent. The core hit the same wall and took the
+// same answer.
+void copyField(uint8_t* dst, size_t cap, const char* src) {
+    if (!cap) return;
+    size_t n = 0;
+    while (src[n] && n + 1 < cap) ++n;
+    memcpy(dst, src, n);
+    dst[n] = 0;
 }
 
 void onWifi(void*, esp_event_base_t base, int32_t id, void* data) {
@@ -226,9 +241,37 @@ bool begin() {
         else             settings::name(g_ssid, sizeof g_ssid);
 
         wifi_config_t wc = {};
-        snprintf(reinterpret_cast<char*>(wc.ap.ssid), sizeof wc.ap.ssid, "%s", g_ssid);
-        wc.ap.ssid_len       = static_cast<uint8_t>(strlen(g_ssid));
-        wc.ap.authmode       = WIFI_AUTH_OPEN;   // see ap.h: deliberate, and said on the portal
+        // ssid_len is set, so the field need not be terminated; copyField
+        // terminates anyway and the length follows what it really copied.
+        copyField(wc.ap.ssid, sizeof wc.ap.ssid, g_ssid);
+        // Open or WPA2, by whether there is a password. Two quite different
+        // deployments out of one setting:
+        //
+        //   blank  an open network. The fairground: nothing to type, the
+        //          portal is the front door, and the hop from a phone to
+        //          this box is readable by anyone in range. Said plainly
+        //          on the portal and in the board's own connection line.
+        //   set    WPA2-PSK, so the link is CCMP-encrypted and a passer-by
+        //          reads nothing. The portal is plain HTTP over it and
+        //          needs nothing more, exactly as a home router's own
+        //          admin page is: HTTPS would add nothing here.
+        //
+        // settings.cpp refuses a password under WPA2's own 8-character
+        // minimum rather than letting one quietly open the network.
+        g_secure = (c.apPass[0] != 0);
+        if (g_secure) {
+            copyField(wc.ap.password, sizeof wc.ap.password, c.apPass);
+            wc.ap.authmode = WIFI_AUTH_WPA2_PSK;
+            // Capable but not required: PMF is WPA3's, and requiring it on
+            // a WPA2 network turns away a phone that cannot do it, which
+            // is the opposite of what a front door is for.
+            wc.ap.pmf_cfg.capable  = true;
+            wc.ap.pmf_cfg.required = false;
+        } else {
+            wc.ap.authmode = WIFI_AUTH_OPEN;
+        }
+        wc.ap.ssid_len       = static_cast<uint8_t>(
+            strnlen(reinterpret_cast<const char*>(wc.ap.ssid), sizeof wc.ap.ssid));
         wc.ap.max_connection = c.apMax;
         wc.ap.beacon_interval = c.apBeacon;
         // 1 is the whole reason this is a setting. A phone in power save
@@ -250,9 +293,8 @@ bool begin() {
 
     if (wantSta) {
         wifi_config_t wc = {};
-        snprintf(reinterpret_cast<char*>(wc.sta.ssid), sizeof wc.sta.ssid, "%s", c.netSsid);
-        snprintf(reinterpret_cast<char*>(wc.sta.password), sizeof wc.sta.password,
-                 "%s", c.netPass);
+        copyField(wc.sta.ssid, sizeof wc.sta.ssid, c.netSsid);
+        copyField(wc.sta.password, sizeof wc.sta.password, c.netPass);
         wc.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
         wc.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
@@ -268,9 +310,10 @@ bool begin() {
         uint8_t ch = 0;
         wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
         esp_wifi_get_channel(&ch, &sec);
-        ESP_LOGI(TAG, "access point \"%s\" open, %s, channel %u, up to %u phones, "
+        ESP_LOGI(TAG, "access point \"%s\" %s, %s, channel %u, up to %u phones, "
                       "beacon %u TU, DTIM %u",
-                 g_ssid, g_addr, ch, c.apMax, c.apBeacon, c.apDtim);
+                 g_ssid, g_secure ? "WPA2" : "OPEN (anyone nearby can read it)",
+                 g_addr, ch, c.apMax, c.apBeacon, c.apDtim);
         if (wantSta) {
             ESP_LOGI(TAG, "a station as well, so the router will decide the channel "
                           "and the phones follow it");
@@ -280,6 +323,7 @@ bool begin() {
 }
 
 bool        apUp()    { return g_apUp; }
+bool        secure()  { return g_secure; }
 const char* ssid()    { return g_ssid; }
 const char* addr()    { return g_addr; }
 uint8_t     phones()  { return g_phones; }

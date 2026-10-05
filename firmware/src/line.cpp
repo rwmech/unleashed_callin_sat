@@ -386,9 +386,9 @@ bool begin() {
     return true;
 }
 
-Line* open(Src src, const SourceOps* ops, void* ctx, uint8_t board,
-           uint16_t cols, uint16_t rows) {
-    if (!ops || !ops->room || !ops->send || !ops->close) return nullptr;
+Handle open(Src src, const SourceOps* ops, void* ctx, uint8_t board,
+            uint16_t cols, uint16_t rows) {
+    if (!ops || !ops->room || !ops->send || !ops->close) return Handle{};
 
     for (Line& l : g_lines) {
         bool was = false;
@@ -420,6 +420,9 @@ Line* open(Src src, const SourceOps* ops, void* ctx, uint8_t board,
         l.inBytes    = 0;
         l.outBytes   = 0;
         l.why[0]     = 0;
+        // Last, and never reset to 0: this is what tells a stale handle
+        // from a live one, so it counts up for the life of the board.
+        const uint32_t serial = l.serial.fetch_add(1, std::memory_order_acq_rel) + 1;
 
         if (!startConnect(l)) {
             // Tell nobody: the caller of open() is the source and it has
@@ -431,40 +434,52 @@ Line* open(Src src, const SourceOps* ops, void* ctx, uint8_t board,
             l.ctx = nullptr;
             l.st.store(St::Idle, std::memory_order_release);
             l.claimed.store(false, std::memory_order_release);
-            return nullptr;
+            return Handle{};
         }
-        ESP_LOGI(TAG, "line %d open, board %u, %ux%u",
-                 static_cast<int>(&l - g_lines), board + 1, cols, rows);
-        return &l;
+        ESP_LOGI(TAG, "line %d open (caller %u), board %u, %ux%u",
+                 static_cast<int>(&l - g_lines), static_cast<unsigned>(serial),
+                 board + 1, cols, rows);
+        return Handle{ &l, serial };
     }
-    return nullptr;
+    return Handle{};
 }
 
-void close(Line* l, const char* why) {
-    if (!l) return;
+bool live(Handle h) {
+    return h.l && h.l->serial.load(std::memory_order_acquire) == h.serial &&
+           h.l->st.load(std::memory_order_acquire) != St::Idle;
+}
+
+void close(Handle h, const char* why) {
+    if (!live(h)) return;
+    Line* l = h.l;
     say(*l, why);
-    const St st = l->st.load(std::memory_order_acquire);
-    if (st == St::Idle) return;
+    // Checked again after the write below cannot help: the serial is read
+    // once more so a reap that happened in between does not leave this
+    // call marking the NEXT caller's line as closing.
+    if (l->serial.load(std::memory_order_acquire) != h.serial) return;
     l->st.store(St::Closing, std::memory_order_release);
 }
 
-void closeFromSource(Line* l, const char* why) {
-    if (!l) return;
+void closeFromSource(Handle h, const char* why) {
+    if (!live(h)) return;
     // Set before the state, so the pump cannot reap between the two and
-    // call into a source that has gone.
-    l->tellSource = false;
-    close(l, why);
+    // call back into a source that has gone.
+    h.l->tellSource = false;
+    close(h, why);
 }
 
-size_t fromCaller(Line* l, const uint8_t* p, size_t n) {
-    if (!l || l->st.load(std::memory_order_acquire) != St::Up) return 0;
+size_t fromCaller(Handle h, const uint8_t* p, size_t n) {
+    if (!live(h)) return 0;
+    Line* l = h.l;
+    if (l->st.load(std::memory_order_acquire) != St::Up) return 0;
     const size_t took = l->toBoard.push(p, n);
     if (took) l->lastAt = ms();
     return took;
 }
 
-void resized(Line* l, uint16_t cols, uint16_t rows) {
-    if (!l || !cols || !rows) return;
+void resized(Handle h, uint16_t cols, uint16_t rows) {
+    if (!live(h) || !cols || !rows) return;
+    Line* l = h.l;
     // Clamp rather than refuse: a browser in a strange state can report
     // nonsense, and a terminal drawn at 1 column is worse than one drawn at
     // the last sane size. 255 is also where a NAWS byte would need escaping

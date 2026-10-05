@@ -76,6 +76,22 @@
   var enc = new TextEncoder();
   var closed = false;
 
+  // The gateway reads one WebSocket frame into a fixed buffer and closes
+  // the line on anything bigger, because the IDF's server has already
+  // taken the frame's header off the socket by the time the length is
+  // known and cannot put it back. It does not reassemble fragments
+  // either. So a paste is cut into pieces here, well under both limits,
+  // and the order is preserved because one WebSocket carries frames in
+  // order.
+  var CHUNK = 512;
+
+  function sendBytes(b) {
+    if (!ws || ws.readyState !== 1) return;
+    for (var i = 0; i < b.length; i += CHUNK) {
+      ws.send(b.subarray(i, Math.min(i + CHUNK, b.length)));
+    }
+  }
+
   function showSize() {
     elSize.textContent = term.cols + 'x' + term.rows;
   }
@@ -115,16 +131,27 @@
   }
   refit();
 
+  var openCols = 0, openRows = 0;
+
   function connect() {
+    openCols = term.cols;
+    openRows = term.rows;
     var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host +
-              '/ws?b=' + board + '&c=' + term.cols + '&r=' + term.rows;
+              '/ws?b=' + board + '&c=' + openCols + '&r=' + openRows;
     ws = new WebSocket(url);
     ws.binaryType = 'arraybuffer';
 
     ws.onopen = function () {
       state('connected', 'up');
-      sentCols = term.cols;
-      sentRows = term.rows;
+      // NOT term.cols/term.rows: the size that reached the gateway is the
+      // one in the URL, taken before the socket opened. A refit between
+      // the two (a phone's address bar settling, the keyboard appearing -
+      // the 120 ms debounce makes it easy) would otherwise be recorded as
+      // already sent, and the board would draw at the stale width for the
+      // whole call with nothing to correct it.
+      sentCols = openCols;
+      sentRows = openRows;
+      tellSize();
       term.focus();
     };
 
@@ -158,15 +185,14 @@
   // Everything the caller types. xterm gives a string; the board wants
   // bytes, and UTF-8 is what it detected the terminal as.
   term.onData(function (d) {
-    if (ws && ws.readyState === 1) ws.send(enc.encode(d));
+    sendBytes(enc.encode(d));
   });
 
   // Pasting and anything else that arrives as a block goes the same way.
   term.onBinary(function (d) {
-    if (!ws || ws.readyState !== 1) return;
     var b = new Uint8Array(d.length);
     for (var i = 0; i < d.length; i++) b[i] = d.charCodeAt(i) & 0xFF;
-    ws.send(b);
+    sendBytes(b);
   });
 
   // The bell. xterm 5.5 has no bell option at all (bellStyle went in 5.0),

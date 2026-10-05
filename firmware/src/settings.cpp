@@ -39,6 +39,7 @@
 #include "nvs_flash.h"
 
 #include "board.h"
+#include "repeat.h"
 
 namespace settings {
 namespace {
@@ -242,6 +243,38 @@ bool begin() {
 
 const Cfg& get() { return g_cfg; }
 
+// One spare copy, static because the one caller is the HTTP server's single
+// task and a Cfg is about a kilobyte, which is more than its stack should
+// hold for this.
+namespace {
+Cfg  g_saved;
+char g_savedName[24];
+bool g_savedRestart = false;
+bool g_haveSnapshot = false;
+}  // namespace
+
+void snapshot() {
+    g_saved        = g_cfg;
+    memcpy(g_savedName, g_name, sizeof g_savedName);
+    g_savedRestart = g_restart;
+    g_haveSnapshot = true;
+}
+
+void rollback() {
+    if (!g_haveSnapshot) return;
+    g_cfg    = g_saved;
+    memcpy(g_name, g_savedName, sizeof g_name);
+    g_restart = g_savedRestart;
+    g_haveSnapshot = false;
+    // The copy held a Wi-Fi key and is no longer needed.
+    memset(&g_saved, 0, sizeof g_saved);
+}
+
+void commit() {
+    g_haveSnapshot = false;
+    memset(&g_saved, 0, sizeof g_saved);
+}
+
 bool restartPending() { return g_restart; }
 
 void name(char* out, size_t n) {
@@ -294,7 +327,7 @@ const char* set(const char* key, const char* value) {
             // The role exists as a setting and not as code, which is the
             // honest state of it. Saying which phase is what stops somebody
             // hunting for a fault that is an unwritten feature.
-            return "repeating is not in this build; it is phase 6";
+            return repeat::unavailable;
         }
         g_cfg.repeat = false;
         return nullptr;
@@ -482,13 +515,19 @@ const char* set(const char* key, const char* value) {
     if (!strcmp(key, "name")) {
         if (strlen(value) > 16) return "a name is at most 16 characters";
         if (!printableOnly(value)) return "plain characters only in a name";
+        // The access point falls back to this when ap_ssid is blank, so
+        // changing it changes the Wi-Fi name, which only happens at the
+        // next restart. Saying "saved and live" for it would be the trap
+        // the page's own restart notice exists to avoid.
+        if (strcmp(value, g_name) != 0 && !g_cfg.apSsid[0]) g_restart = true;
         copyStr(g_name, sizeof g_name, value);
         return nullptr;
     }
 
     // --- the board list --------------------------------------------------
     // b<n>_name, b<n>_host, b<n>_port, b<n>_note, with n from 1.
-    if (key[0] == 'b' && key[1] >= '1' && key[1] <= '5' && key[2] == '_') {
+    if (key[0] == 'b' && key[1] >= '1' && key[1] <= static_cast<char>('0' + kBoards)
+        && key[2] == '_') {
         Board& b = g_cfg.boards[key[1] - '1'];
         const char* what = key + 3;
         if (!strcmp(what, "name")) {

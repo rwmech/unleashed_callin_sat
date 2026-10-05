@@ -103,6 +103,11 @@ httpd_handle_t g_hd = nullptr;
 struct WsCtx {
     httpd_handle_t hd = nullptr;
     int            fd = -1;
+    // Which caller has this slot, counted up at every claim. The same
+    // problem line::Handle solves, for the same reason: work queued onto
+    // the server's task outlives the caller it was queued for, and a slot
+    // freed in between belongs to somebody else by the time it runs.
+    uint32_t       gen = 0;
     line::Handle   ln;
     uint8_t        out[kWsOutMax] = {0};
     size_t         outLen = 0;
@@ -119,9 +124,16 @@ WsCtx* ctxForFd(int fd) {
     return nullptr;
 }
 
+uint32_t g_wsGen = 0;
+
+// A slot is free only when its socket has gone AND nothing of its is still
+// queued on the server's task. Without the `busy` half, a sendWork already
+// in the queue would run against the slot after a new caller took it, and
+// send that new caller up to a kilobyte of the previous one's screen - and
+// clear the one-frame-in-flight flag under them while it was at it.
 WsCtx* freeCtx() {
     for (WsCtx& c : g_ws) {
-        if (c.fd < 0) return &c;
+        if (c.fd < 0 && !c.busy.load(std::memory_order_acquire)) return &c;
     }
     return nullptr;
 }
@@ -150,12 +162,29 @@ void sendWork(void* arg) {
 struct CloseWork {
     httpd_handle_t hd;
     int            fd;
+    uint8_t        slot;     // which WsCtx queued it
+    uint32_t       gen;      // and for which caller
     char           why[40];
 };
 CloseWork g_closeWork[line::kLines];
 
 void closeWork(void* arg) {
     auto* w = static_cast<CloseWork*>(arg);
+    // Three guards, and each one is a socket this would otherwise touch
+    // that is not the one it was queued for:
+    //
+    //  - fd < 0: this item already ran, or was superseded by a later close
+    //    for the same slot;
+    //  - the slot has been claimed again, so this fd number may have been
+    //    closed and handed by lwIP to a brand new caller. Sending them the
+    //    PREVIOUS caller's goodbye and closing their socket is the bug;
+    //  - and the server's own check that the fd is still a WebSocket.
+    if (w->fd < 0) return;
+    if (g_ws[w->slot].gen != w->gen) { w->fd = -1; return; }
+    if (httpd_ws_get_fd_info(w->hd, w->fd) != HTTPD_WS_CLIENT_WEBSOCKET) {
+        w->fd = -1;
+        return;
+    }
     // Why it ended, as a text frame, so the page can show it rather than
     // the caller seeing a terminal that simply stopped. A failure here is
     // not worth reporting: the socket is going either way.
@@ -204,8 +233,10 @@ void wsClose(void* ctx, const char* why) {
     if (c->gone.exchange(true, std::memory_order_acq_rel)) return;
     const size_t i = static_cast<size_t>(c - g_ws);
     CloseWork& w = g_closeWork[i];
-    w.hd = c->hd;
-    w.fd = c->fd;
+    w.hd   = c->hd;
+    w.fd   = c->fd;
+    w.slot = static_cast<uint8_t>(i);
+    w.gen  = c->gen;
     snprintf(w.why, sizeof w.why, "%s", why ? why : "");
     if (httpd_queue_work(c->hd, closeWork, &w) != ESP_OK) {
         // Nothing can be sent and the socket cannot be closed from here,
@@ -506,17 +537,41 @@ esp_err_t wsHandler(httpd_req_t* req) {
     if (req->method == HTTP_GET) {
         // The handshake. The server has already answered it; this is where
         // the line is taken.
-        const int b    = queryNum(req, "b", 1, settings::kBoards, 1);
-        const int cols = queryNum(req, "c", 20, 240, 80);
-        const int rows = queryNum(req, "r", 5, 240, 24);
+        //
+        // THIS DEPENDS ON IDF 5.3.1 BEHAVIOUR THAT LATER IDF REMOVED, and
+        // it is worth naming because nothing would warn. On the pinned
+        // framework httpd_uri() answers the handshake and then falls
+        // through to the URI's handler (httpd_uri.c:320-328), which is how
+        // this block runs at all. From IDF 6.1.0 that path ends with
+        // "If the request is websocket handshake, then do not call the
+        // uri->handler" and returns. Under that framework this block
+        // becomes dead code: no slot claimed, no line opened, no
+        // connection line, and every keystroke dropped at the `if (!c)`
+        // below. The browser would say "connected" and the terminal would
+        // simply never do anything - no compile error, no log, no partial
+        // symptom, and the whole access-point role gone.
+        //
+        // The portable shape is to claim the line lazily on the first data
+        // frame instead. It is not done here because the handshake is also
+        // where the query string lives (which board, and the window size),
+        // and a frame does not carry it. A framework bump has to come back
+        // to this.
+        const int b = queryNum(req, "b", 1, settings::kBoards, 1);
+        // The same bounds line::resized clamps to, so the two cannot
+        // disagree about what a legal window is: the first version took
+        // 20..240 here and clamped only the top end there, so a 15-column
+        // glass was told to the board as 80 while "s 10 5" was accepted.
+        const int cols = queryNum(req, "c", line::kColsMin, line::kColsMax, 80);
+        const int rows = queryNum(req, "r", line::kRowsMin, line::kRowsMax, 24);
 
         WsCtx* c = freeCtx();
         if (!c) {
             ESP_LOGW(TAG, "no gateway line slot for fd %d", fd);
             return ESP_FAIL;      // the server closes the socket
         }
-        c->hd = g_hd;
-        c->fd = fd;
+        c->hd  = g_hd;
+        c->fd  = fd;
+        c->gen = ++g_wsGen;
         c->gone.store(false, std::memory_order_release);
         c->busy.store(false, std::memory_order_release);
         c->outLen = 0;
@@ -596,13 +651,32 @@ esp_err_t wsHandler(httpd_req_t* req) {
     }
     if (f.len == 0) return ESP_OK;
     if (f.len > sizeof g_wsBuf) {
-        // Refused rather than half-taken. esp_http_server does not
-        // reassemble fragments, so a very large paste would arrive in
-        // pieces this cannot join; losing it loudly beats sending the
-        // board half of it.
-        ESP_LOGW(TAG, "a %u byte frame is too big; dropped",
+        // ESP_FAIL, not ESP_OK, and the difference is the whole bug.
+        //
+        // The length-only call above is NOT a peek: httpd_ws_recv_frame
+        // with max_len 0 has already taken the length bytes and the 4-byte
+        // mask key off the socket, and the IDF never purges a WebSocket
+        // payload (its remaining_len machinery belongs to the HTTP body).
+        // So returning OK here would leave f.len bytes of payload in the
+        // stream, and the NEXT frame header read would be that payload:
+        // either a refusal that kills the session anyway, or - worse - a
+        // scrambled subset of the caller's own paste forwarded to the board
+        // as keystrokes.
+        //
+        // Failing closes the socket deterministically. The caller sees the
+        // line drop and calls again, which is a bad minute rather than a
+        // scrambled board. term.js chunks what it sends so an ordinary
+        // paste never reaches this; it is the backstop for a client that
+        // does not.
+        ESP_LOGW(TAG, "a %u byte frame is too big; closing the line",
                  static_cast<unsigned>(f.len));
-        return ESP_OK;
+        if (c) {
+            c->gone.store(true, std::memory_order_release);
+            line::closeFromSource(c->ln, "too much at once; call again");
+            c->fd = -1;
+            c->ln.clear();
+        }
+        return ESP_FAIL;
     }
 
     f.payload = g_wsBuf;
@@ -629,16 +703,39 @@ esp_err_t wsHandler(httpd_req_t* req) {
         return ESP_OK;
     }
 
+    // Fragments. esp_http_server does not reassemble (its own header says
+    // so), so a continuation is the tail of a message whose head has
+    // already gone to the board. Sending the board half a paste and
+    // silently dropping the rest is the worst of the three choices, and
+    // "the console says it did" was not true either: a CONTINUE frame used
+    // to fall out of the type test below with no log at all.
+    if (f.type == HTTPD_WS_TYPE_CONTINUE || !f.final) {
+        ESP_LOGW(TAG, "a fragmented message: closing the line rather than "
+                      "sending the board half of it");
+        c->gone.store(true, std::memory_order_release);
+        line::closeFromSource(c->ln, "too much at once; call again");
+        c->fd = -1;
+        c->ln.clear();
+        return ESP_FAIL;
+    }
     if (f.type != HTTPD_WS_TYPE_BINARY) return ESP_OK;   // ping and pong are the server's
 
     // The caller's own bytes. A short take is backpressure, so offer the
     // rest in slices rather than dropping a keystroke: this is the server's
     // task, so the wait is bounded and small.
+    // The wait is deliberately SMALL rather than merely bounded: this is
+    // the server's one task, so every millisecond here is a millisecond the
+    // portal is unserved and every other caller's screen is frozen, because
+    // sendWork is queued onto this task too. Three tries of 2 ms, not
+    // twenty of ten.
+    //
+    // It is almost never reached: term.js chunks at 512 bytes against a
+    // 1,024-byte ring the pump drains every 20 ms.
     size_t at = 0;
-    for (int tries = 0; at < f.len && tries < 20; ++tries) {
+    for (int tries = 0; at < f.len && tries < 3; ++tries) {
         const size_t took = line::fromCaller(c->ln, g_wsBuf + at, f.len - at);
         at += took;
-        if (at < f.len) vTaskDelay(pdMS_TO_TICKS(10));
+        if (at < f.len) vTaskDelay(pdMS_TO_TICKS(2));
     }
     if (at < f.len) {
         ESP_LOGW(TAG, "dropped %u typed bytes: the board is not keeping up",
@@ -654,6 +751,13 @@ void onSockClose(httpd_handle_t hd, int fd) {
     (void)hd;
     for (WsCtx& c : g_ws) {
         if (c.fd != fd) continue;
+        // THE ORDER OF THESE THREE LINES IS LOAD-BEARING, here and in
+        // every other place a slot is given up. closeFromSource must reach
+        // the line BEFORE c.fd = -1 makes the slot available to freeCtx:
+        // the pump re-reads the line's state with acquire before it calls
+        // room() or send(), so a line already Closing is never touched,
+        // whereas a slot handed to a new caller while its line is still Up
+        // would have the pump writing into the new caller's context.
         c.gone.store(true, std::memory_order_release);
         line::closeFromSource(c.ln, "your phone left the network");
         c.fd = -1;
@@ -711,21 +815,58 @@ void failed(int ip) {
             return;
         }
     }
-    // A free slot, or the oldest. Four slots is plenty for a box with
-    // fifteen phones on it, and taking the oldest means a flood from many
-    // addresses cannot protect one of them by filling the table.
+    // A free slot, an expired one, or the oldest that is NOT ALREADY
+    // LOCKED. That last clause is the whole point and the first version
+    // had it exactly backwards: evicting the oldest meant somebody who had
+    // used up their five tries could send four failures from four other
+    // addresses, evict their own record and get five more. The core
+    // recorded the same shape last week, where a full ban table could lift
+    // a live ban.
+    //
+    // With every slot locked, nothing new is recorded and locked() says no
+    // for an address it has never seen - which fails OPEN for a stranger
+    // while four others are locked out. Four slots against fifteen phones
+    // makes that unlikely, and the alternative (refusing everybody) would
+    // let one attacker lock the sysop out of their own box.
     Fail* pick = nullptr;
     for (Fail& f : g_fails) {
-        if (!f.count) { pick = &f; break; }
+        if (!f.count || since(now, f.firstAt) > kFailWindowMs) { pick = &f; break; }
+        if (f.count >= kFailMax) continue;                  // locked: never evicted
         if (!pick || since(now, f.firstAt) > since(now, pick->firstAt)) pick = &f;
+    }
+    if (!pick) {
+        ESP_LOGW(TAG, "every lockout slot is in use; this guess is not counted");
+        return;
     }
     pick->ip = ip;
     pick->count = 1;
     pick->firstAt = now;
 }
 
+// Is this request from a phone on this gateway's own access point, as
+// opposed to the house network it may also have joined? httpd_start binds
+// every interface, so without this the whole surface is on the home LAN
+// too.
+bool onOwnAp(httpd_req_t* req) {
+    if (!ap::apUp()) return false;
+    const int ip = peerIp(req);
+    if (!ip) return false;
+    // The same /24 the DHCP server hands out, which is what ap.cpp
+    // configures. Compared in network order, so the top three octets are
+    // the low three bytes.
+    uint32_t mine = 0;
+    if (inet_pton(AF_INET, ap::addr(), &mine) != 1) return false;
+    return (static_cast<uint32_t>(ip) & 0x00FFFFFFu) == (mine & 0x00FFFFFFu);
+}
+
 bool signedIn(httpd_req_t* req) {
-    if (!settings::passwordSet()) return true;      // first boot; the page says so
+    // First boot: the page is open, because a gateway with no password set
+    // has no other way to be set up and refusing would refuse the only way
+    // in. But ONLY from its own access point, which is the board's own rule
+    // for its published default ("local only, and only while it is the
+    // default") rather than a weaker version of it. A gateway that has also
+    // joined a house router does not offer its settings to that network.
+    if (!settings::passwordSet()) return onOwnAp(req);
     if (!g_sess.token[0]) return false;
     if (since(ms(), g_sess.lastAt) > kSessIdleMs) { g_sess.token[0] = 0; return false; }
 
@@ -733,7 +874,12 @@ bool signedIn(httpd_req_t* req) {
     if (httpd_req_get_hdr_value_str(req, "Cookie", cookie, sizeof cookie) != ESP_OK) {
         return false;
     }
-    const char* at = strstr(cookie, "gws=");
+    // "gws=" has to START a cookie, or a cookie called "Xgws" would match
+    // on its tail. Cookies are separated by "; ".
+    const char* at = nullptr;
+    for (const char* p = cookie; (p = strstr(p, "gws=")) != nullptr; p += 4) {
+        if (p == cookie || p[-1] == ' ' || p[-1] == ';') { at = p; break; }
+    }
     if (!at) return false;
     at += 4;
     const size_t want = strlen(g_sess.token);
@@ -753,11 +899,19 @@ void newSession(httpd_req_t* req, int ip) {
     }
     g_sess.lastAt = ms();
     g_sess.ip     = ip;
-    char hdr[96];
-    // HttpOnly and SameSite=Strict: there is no script that needs it and
-    // no other site that should be able to send it. Not Secure, because
-    // this is plain HTTP by necessity and a Secure cookie would never be
-    // sent at all.
+    // STATIC, and that is not tidiness. httpd_resp_set_hdr stores the
+    // POINTER and does not copy ("Make sure that the lifetime of the field
+    // value strings are valid till send function is called",
+    // esp_http_server.h). Nothing is sent until the page is rendered, so a
+    // local here is dangling by then: the cookie would carry whatever the
+    // rendering left on the stack, the session would never match again, and
+    // unterminated stack bytes would go out over HTTP. The server is
+    // single-threaded, so one buffer is enough.
+    //
+    // HttpOnly and SameSite=Strict: no script needs it and no other site
+    // should be able to send it. Not Secure, because this may be plain
+    // HTTP and a Secure cookie would then never be sent at all.
+    static char hdr[96];
     snprintf(hdr, sizeof hdr, "gws=%s; Path=/; HttpOnly; SameSite=Strict; Max-Age=900",
              g_sess.token);
     httpd_resp_set_hdr(req, "Set-Cookie", hdr);
@@ -944,6 +1098,18 @@ void setupForm(httpd_req_t* req, const char* problem, const char* done) {
     row(req, "ser_baud", "Baud", num,
         "300, 1200, 2400, 9600, 19200, 38400, 57600 or 115200, matching the "
         "terminal's own setting.");
+    static const char* kFmtName[] = { "8N1", "7E1", "7N1" };
+    say(req, "<label for=\"ser_fmt\">Format</label>"
+             "<select id=\"ser_fmt\" name=\"ser_fmt\">");
+    for (unsigned i = 0; i < 3; ++i) {
+        sayf(req, "<option value=\"%s\"%s>%s</option>", kFmtName[i],
+             (c.serFmt == i) ? " selected" : "", kFmtName[i]);
+    }
+    say(req, "</select><p class=\"hint\">Data bits, parity and stop bits, "
+             "matching the terminal's own setting. A VT220 is often 7E1.</p>");
+    snprintf(num, sizeof num, "%d", c.serBtn);
+    row(req, "ser_btn", "Button pin", num,
+        "A press hangs up, and a press on an idle line calls. -1 is off.");
     snprintf(num, sizeof num, "%u", c.serIdle);
     row(req, "ser_idle", "Idle minutes", num,
         "Silence before the line is freed. 1 to 120.");
@@ -1017,13 +1183,27 @@ esp_err_t setupPost(httpd_req_t* req) {
         httpd_resp_sendstr(req, "too much");
         return ESP_OK;
     }
+    // Bounded, because esp_http_server is ONE task and this is reachable
+    // without a password. A client that sends one byte of a declared 2,000
+    // and then nothing would otherwise hold this loop for ever, and with it
+    // the portal, every asset, every new WebSocket handshake AND every live
+    // caller's screen, because sendWork is queued onto this same task. It
+    // would not even trip the watchdog: httpd_req_recv blocks rather than
+    // spinning, so the board would hang quietly instead of rebooting.
+    //
+    // recv_wait_timeout is 5 s, so three stalls is about fifteen seconds
+    // for a form being submitted from a phone in the same room. Past that
+    // it is not a form.
     size_t at = 0;
+    int stalls = 0;
     while (at < req->content_len) {
         const int r = httpd_req_recv(req, body + at, req->content_len - at);
         if (r <= 0) {
-            if (r == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            if (r == HTTPD_SOCK_ERR_TIMEOUT && ++stalls <= 3) continue;
+            memset(body, 0, sizeof body);
             return ESP_FAIL;
         }
+        stalls = 0;
         at += static_cast<size_t>(r);
     }
     body[at] = 0;
@@ -1064,9 +1244,20 @@ esp_err_t setupPost(httpd_req_t* req) {
         "ap_ssid", "ap_pass", "ap_addr", "ap_chan", "ap_max", "ap_beacon",
         "ap_dtim", "ap_probe",
         "net_ssid", "net_pass",
-        "ser_tx", "ser_rx", "ser_baud", "ser_idle", "ser_board",
+        "ser_tx", "ser_rx", "ser_baud", "ser_fmt", "ser_idle", "ser_board",
+        "ser_btn",
     };
     char problem[96] = {0};
+
+    // settings::set applies as it validates, and some of what it applies is
+    // live at once: ap_probe answers the next OS probe, ser_idle is read
+    // every pass, and every board address is read by the next call. So a
+    // form refused on its fourth row would already have changed the first
+    // three, and the page would show the half-applied values as though they
+    // were saved. Snapshot first and put it all back on a refusal: one
+    // copy of a settings struct is cheaper than a second validator that
+    // could disagree with the first.
+    settings::snapshot();
 
     for (const char* k : kKeys) {
         char v[80];
@@ -1118,14 +1309,17 @@ esp_err_t setupPost(httpd_req_t* req) {
     memset(body, 0, sizeof body);   // it held a Wi-Fi key and a password
 
     if (problem[0]) {
+        settings::rollback();
         setupForm(req, problem, nullptr);
         return ESP_OK;
     }
     if (!settings::save()) {
+        settings::rollback();
         setupForm(req, "Nothing could be written to this gateway's own storage.",
                   nullptr);
         return ESP_OK;
     }
+    settings::commit();
     if (!settings::passwordSet() || !g_sess.token[0]) {
         askPassword(req, nullptr);
         return ESP_OK;

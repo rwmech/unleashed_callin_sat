@@ -264,15 +264,33 @@ bool pumpDown(Line& l) {
         }
     }
     if (data) {
-        // room() was authoritative and filter() only ever shrinks, so this
-        // cannot be refused. If it ever is, the bytes are lost and the
-        // console says so rather than the terminal silently gapping.
-        if (!l.ops->send(l.ctx, buf, data)) {
-            ESP_LOGW(TAG, "node %d: source refused %u bytes it had room for",
-                     static_cast<int>(&l - g_lines), static_cast<unsigned>(data));
-        } else {
-            l.outBytes += data;
+        // room() was authoritative and filter() only ever shrinks, so a
+        // refusal here should be impossible. It is not quite: the access
+        // point's source refuses when the server's work queue is full,
+        // which is a sendto on a UDP control socket and can fail under
+        // pbuf pressure - exactly the state a WROOM with a busy access
+        // point gets into.
+        //
+        // These bytes came off the socket and are not kept, so there is no
+        // retrying them later. Dropping them would split an ANSI escape
+        // sequence in the middle of a screen, which is the thing the
+        // all-or-nothing rule exists to prevent, and the first version
+        // dropped them with only a console line - which in a field is
+        // nobody. So: a few immediate tries, and then CLOSE the line with
+        // a reason the caller can read. A dropped call is a bad minute; a
+        // silently corrupted screen is a fault nobody can describe.
+        bool sent = false;
+        for (int tries = 0; tries < 4 && !sent; ++tries) {
+            sent = l.ops->send(l.ctx, buf, data);
+            if (!sent && tries < 3) vTaskDelay(pdMS_TO_TICKS(5));
         }
+        if (!sent) {
+            ESP_LOGW(TAG, "line %d: the source refused %u bytes it had room for",
+                     static_cast<int>(&l - g_lines), static_cast<unsigned>(data));
+            say(l, "this gateway could not keep up");
+            return false;
+        }
+        l.outBytes += data;
     }
     return true;
 }
@@ -452,16 +470,28 @@ bool live(Handle h) {
 void close(Handle h, const char* why) {
     if (!live(h)) return;
     Line* l = h.l;
-    say(*l, why);
-    // Checked again after the write below cannot help: the serial is read
-    // once more so a reap that happened in between does not leave this
-    // call marking the NEXT caller's line as closing.
+    // The generation is re-read BEFORE anything is written, not after. The
+    // first version stamped `why` first, which on a reap-and-reopen in the
+    // window put this caller's words on the next caller's line - and `why`
+    // is what their source shows them.
+    //
+    // It is still check-then-act, and deliberately: closing a line is
+    // idempotent and the window is a few instructions wide, so the
+    // residual risk is one spurious close of a brand new caller. Making it
+    // airtight wants a compare-and-swap on the state, which is worth doing
+    // the day a line is ever closed by anything but its own source.
     if (l->serial.load(std::memory_order_acquire) != h.serial) return;
+    say(*l, why);
     l->st.store(St::Closing, std::memory_order_release);
 }
 
 void closeFromSource(Handle h, const char* why) {
     if (!live(h)) return;
+    // The generation again, before tellSource is written: without it a
+    // reap and a reopen in the window would mark the NEW caller's line
+    // "do not tell the source", and their source would then never be told
+    // to let go of its slot.
+    if (h.l->serial.load(std::memory_order_acquire) != h.serial) return;
     // Set before the state, so the pump cannot reap between the two and
     // call back into a source that has gone.
     h.l->tellSource = false;
@@ -477,15 +507,23 @@ size_t fromCaller(Handle h, const uint8_t* p, size_t n) {
     return took;
 }
 
+void setIdle(Handle h, uint32_t msec) {
+    if (!live(h)) return;
+    if (h.l->serial.load(std::memory_order_acquire) != h.serial) return;
+    h.l->idleMs = msec;
+}
+
 void resized(Handle h, uint16_t cols, uint16_t rows) {
     if (!live(h) || !cols || !rows) return;
     Line* l = h.l;
     // Clamp rather than refuse: a browser in a strange state can report
-    // nonsense, and a terminal drawn at 1 column is worse than one drawn at
-    // the last sane size. 255 is also where a NAWS byte would need escaping
-    // in a way no board expects.
-    if (cols > 240) cols = 240;
-    if (rows > 240) rows = 240;
+    // nonsense, and a terminal drawn at 1 column is worse than one drawn
+    // at the last sane size. The bounds are line.h's, shared with the
+    // query string the handshake carries.
+    if (cols < kColsMin) cols = kColsMin;
+    if (cols > kColsMax) cols = kColsMax;
+    if (rows < kRowsMin) rows = kRowsMin;
+    if (rows > kRowsMax) rows = kRowsMax;
     if (l->cols == cols && l->rows == rows) return;
     l->cols = cols;
     l->rows = rows;

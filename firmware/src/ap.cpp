@@ -111,9 +111,19 @@ void onWifi(void*, esp_event_base_t base, int32_t id, void* data) {
                 auto* e = static_cast<wifi_event_sta_disconnected_t*>(data);
                 g_staUp = false;
                 g_staAddr[0] = 0;
-                g_redialGap = g_redialGap ? (g_redialGap * 2) : 0;
+                // The ladder: nothing the first time, then 30 s doubling
+                // to five minutes. The first version was
+                // `g_redialGap ? g_redialGap * 2 : 0`, which starts at 0
+                // and STAYS at 0, because 0 is falsy: the doubling branch
+                // was unreachable and the clamp was dead code, so a box
+                // with a mistyped network name scanned once a second for
+                // ever, sharing the radio with the callers its access
+                // point was carrying.
+                if (g_redialGap == 0)      g_redialGap = 30000u;
+                else                       g_redialGap *= 2;
                 if (g_redialGap > 300000u) g_redialGap = 300000u;
                 g_redialAt = ms();
+                if (!g_redialAt) g_redialAt = 1;   // 0 means "nothing pending"
                 ESP_LOGW(TAG, "left %s, reason %d; trying again in %u s",
                          settings::get().netSsid, e->reason,
                          static_cast<unsigned>(g_redialGap / 1000));
@@ -342,6 +352,10 @@ uint8_t channel() {
 // task and the event handler only ever stamps it.
 void tick() {
     if (!settings::get().netSsid[0] || g_staUp) return;
+    // 0 is the sentinel for "nothing pending", and ms() can legitimately
+    // BE 0, which is why onWifi never stores it: a disconnect in the first
+    // millisecond of uptime would otherwise never be retried. Same shape
+    // as the pairing clock the core's link lane had to fix.
     if (!g_redialAt) return;
     if (since(ms(), g_redialAt) < g_redialGap) return;
     g_redialAt = 0;

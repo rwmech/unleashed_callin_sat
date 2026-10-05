@@ -181,6 +181,18 @@ const char* set(const char* key, const char* value);
 // one per field.
 bool save();
 
+// set() applies as it validates, and some of what it applies is live at
+// once (the portal's probe answer, the serial line's idle clock, every
+// board address). So a form refused part way would already have changed
+// the rows before the refusal.
+//
+// snapshot() before applying a form, rollback() on any refusal, commit()
+// once save() has succeeded. One copy of the struct, which is cheaper than
+// a second validator that could disagree with the first.
+void snapshot();
+void rollback();
+void commit();
+
 // Which settings need a restart before they do anything, so the page can
 // say so rather than claiming "saved and live" for something that is not.
 // Cleared by save() reporting it; true while any such change is pending.

@@ -117,7 +117,12 @@ def squash(data):
     return sink.getvalue()
 
 
-def build(fw):
+def build(fw, verified=True):
+    """`verified` is false when fetch_web.py could not confirm the pinned
+    packages this build. The cache may still hold files from an earlier
+    build, and they may be the wrong version: an unverified build is marked
+    as carrying a placeholder whatever is on disk, so a release build
+    refuses it."""
     web = os.path.join(fw, "web")
     out = os.path.join(fw, "src", "webassets")
     os.makedirs(out, exist_ok=True)
@@ -127,7 +132,7 @@ def build(fw):
     cache = os.path.join(fw, ".web-cache")
     if not os.path.isdir(cache):
         cache = ""
-    stubbed = False
+    stubbed = not verified
 
     rows = []
     blobs = {}

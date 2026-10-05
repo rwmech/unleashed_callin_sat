@@ -153,6 +153,15 @@ def fetch_one(cache, blk):
     except Exception as e:  # noqa: BLE001
         sys.stderr.write("fetch_web: cannot unpack %s (%s)\n" % (pkg, e))
         return False
+    # The stamp is written HERE and nowhere else, which is what makes the
+    # "already cached" shortcut above mean "cached at the version and hash
+    # the lock names" rather than "there is a file of about the right
+    # name". Without it the shortcut never fired (so every build
+    # re-downloaded 290 KB) and, worse, a build with no network found the
+    # old files present and shipped them with nothing checking they were
+    # the pinned ones.
+    with open(stamp, "w", encoding="utf-8") as f:
+        f.write(want_stamp + "\n")
     return True
 
 
@@ -169,12 +178,16 @@ def main():
             "fetch_web: carrying on with the placeholder terminal. A release\n"
             "           build (-DGW_RELEASE) will refuse to compile.\n"
         )
-    # Generate the header whether or not the fetch worked: mkweb.py writes a
-    # placeholder when the cache is short and marks the header as such.
+    # The header is generated whether or not the fetch worked, and `ok` is
+    # passed through rather than left for mkweb to guess at. A cache that
+    # happens to hold files is not the same thing as a verified fetch: with
+    # no network, mkweb would otherwise find the old files, mark the image
+    # as carrying a real terminal and let a release build ship whatever
+    # version was lying about.
     sys.path.insert(0, here())
     import mkweb  # noqa: E402 - deliberately late, after sys.path
 
-    mkweb.build(fw)
+    mkweb.build(fw, verified=ok)
 
 
 main()

@@ -32,7 +32,6 @@
 
 #include "driver/uart.h"
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -60,28 +59,47 @@ std::atomic<bool> g_want{false};     // a caller should be on the line
 TaskHandle_t g_task = nullptr;
 volatile bool g_run = false;
 
-uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
-
 // --- the source ----------------------------------------------------------
+// How much the driver's TX ring will take without the write blocking.
+//
+// Two margins, and both are there because room() is AUTHORITATIVE: the pump
+// reads at most this much off the board and then expects send() to take all
+// of it, so a figure that is optimistic by one byte means a dropped chunk
+// in the middle of a screen.
+//
+//  - kRingSlack, because the TX ring is a FreeRTOS ringbuffer and each item
+//    costs a header plus alignment on top of its bytes, which is not in the
+//    free-size figure;
+//  - kBite, because one serial line should not take a whole pass's worth of
+//    the board's output and leave the other lines waiting. At 9600 baud
+//    256 bytes is a quarter of a second of wire, far more than the pump's
+//    20 ms pass needs to keep ahead.
+constexpr size_t kRingSlack = 64;
+constexpr size_t kBite      = 256;
+
 size_t wireRoom(void*) {
     size_t free_ = 0;
     if (uart_get_tx_buffer_free_size(static_cast<uart_port_t>(GW_UART_PORT), &free_)
         != ESP_OK) {
         return 0;
     }
-    // Room is authoritative: the pump reads at most this much and then
-    // expects send() to take it, so uart_tx_chars cannot come up short.
-    return free_;
+    if (free_ <= kRingSlack) return 0;
+    free_ -= kRingSlack;
+    return (free_ > kBite) ? kBite : free_;
 }
 
 bool wireSend(void*, const uint8_t* p, size_t n) {
-    // uart_tx_chars, not uart_write_bytes: write_bytes BLOCKS until the
-    // whole lot is queued, and this runs on the pump task, which every
-    // other caller's line shares. A terminal at 300 baud would hold them
-    // all. tx_chars queues what fits and returns, which is why room() is
-    // asked first.
-    const int w = uart_tx_chars(static_cast<uart_port_t>(GW_UART_PORT),
-                                reinterpret_cast<const char*>(p), n);
+    // uart_write_bytes, and it does NOT block here, which is the whole
+    // reason room() is asked first and why it keeps a margin: write_bytes
+    // waits only when the ring cannot take the lot.
+    //
+    // uart_tx_chars was the first version and was wrong: it writes to the
+    // hardware FIFO rather than the ring, so it can only ever take the
+    // tens of bytes the FIFO has free, whatever the ring's free-size says.
+    // Every send over about a hundred bytes would have come up short, and
+    // short is a dropped chunk mid-screen.
+    const int w = uart_write_bytes(static_cast<uart_port_t>(GW_UART_PORT),
+                                   reinterpret_cast<const char*>(p), n);
     return w == static_cast<int>(n);
 }
 
@@ -89,12 +107,24 @@ void wireClose(void*, const char* why) {
     // The terminal is a physical thing that cannot be closed, so this is a
     // message and a reset of the state. The words go out as the board's own
     // line, because somebody is sitting in front of it wondering.
+    //
+    // uart_tx_chars and NOT uart_write_bytes, for the reason wireSend's own
+    // first version got wrong from the other direction: this runs on the
+    // PUMP task (reap() calls it), and write_bytes blocks until the whole
+    // lot is in the ring. The pump keeps that ring near full whenever the
+    // board is drawing, so at 300 baud waiting for 64 bytes of room is two
+    // seconds with all four caller lines frozen - forty times the project's
+    // own slow-pass threshold.
+    //
+    // tx_chars takes what the hardware FIFO has free and returns. A
+    // goodbye that is cut short is a cosmetic loss on a line that is
+    // closing anyway; holding every other caller is not.
     char msg[64];
     const int n = snprintf(msg, sizeof msg, "\r\n--> %s\r\n",
                            why && *why ? why : "The line closed.");
     if (n > 0) {
-        uart_write_bytes(static_cast<uart_port_t>(GW_UART_PORT), msg,
-                         static_cast<size_t>(n));
+        uart_tx_chars(static_cast<uart_port_t>(GW_UART_PORT), msg,
+                      static_cast<uint32_t>(n));
     }
     g_ln.clear();
     // Not re-dialled at once: a terminal whose board has gone would
@@ -161,7 +191,6 @@ bool dial(uint8_t oneBased) {
 // --- the reader ----------------------------------------------------------
 void task(void*) {
     uint8_t buf[kReadChunk];
-    uint32_t lastKey = ms();
     bool offered = false;
 
     while (g_run) {
@@ -179,8 +208,6 @@ void task(void*) {
             }
             continue;
         }
-        lastKey = ms();
-        (void)lastKey;
 
         if (!haveLine) {
             offered = false;
@@ -206,11 +233,11 @@ void task(void*) {
                 if (!pick) { offer(); continue; }
                 if (!dial(pick)) continue;
             }
-            // The line's idle clock, in the pump's own units.
-            if (line::live(g_ln) && g_ln.l) {
-                g_ln.l->idleMs = static_cast<uint32_t>(settings::get().serIdle)
-                                 * 60u * 1000u;
-            }
+            // The line's idle clock, through the Handle like everything
+            // else: reaching into the Line directly would set the NEXT
+            // caller's timeout if a reap and a reopen landed in between.
+            line::setIdle(g_ln, static_cast<uint32_t>(settings::get().serIdle)
+                                * 60u * 1000u);
             continue;
         }
 

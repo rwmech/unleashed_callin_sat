@@ -101,6 +101,13 @@ enum class Up  : uint8_t { None = 0, Ip, Link };
 
 enum class St : uint8_t { Idle = 0, Connecting, Up, Closing };
 
+// What counts as a window. One set of bounds, because a source that
+// clamped differently from the line would be two opinions about the same
+// terminal: 240 rather than 255 because a NAWS byte of 0xFF has to be
+// doubled inside a subnegotiation and no board expects that.
+constexpr uint16_t kColsMin = 20, kColsMax = 240;
+constexpr uint16_t kRowsMin = 5,  kRowsMax = 240;
+
 // A source carries a caller's bytes. `ctx` is whatever the source wants;
 // the line only keeps it and hands it back.
 struct SourceOps {
@@ -224,6 +231,11 @@ void resized(Handle h, uint16_t cols, uint16_t rows);
 
 // Is this handle still the caller it was opened for?
 bool live(Handle h);
+
+// How long this line may be silent before it is freed, in milliseconds;
+// 0 is no limit. Through the Handle, so a source that is a moment late
+// cannot set the next caller's clock.
+void setIdle(Handle h, uint32_t ms);
 
 // How many lines are busy, for the portal and the console.
 uint8_t busy();

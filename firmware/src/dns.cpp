@@ -54,6 +54,13 @@ constexpr uint16_t kTypeAAAA = 28;
 constexpr uint16_t kClassIn  = 1;
 
 int           g_sock = -1;
+// The /24 this gateway's access point hands out, in network order. Only a
+// query from inside it is answered: the socket is bound to every
+// interface, so with a house network joined as well this would otherwise
+// answer DNS on the HOME LAN with its own address, racing the router and
+// breaking name resolution there intermittently. dns.h is unambiguous that
+// this is the access point's own responder.
+uint32_t      g_net  = 0;
 TaskHandle_t  g_task = nullptr;
 volatile bool g_run  = false;
 uint32_t      g_count = 0;
@@ -111,6 +118,11 @@ void task(void*) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+        // Not our network, not our question. Checked before anything is
+        // parsed, so a stranger on another interface cannot even reach the
+        // parser.
+        if (g_net && (from.sin_addr.s_addr & 0x00FFFFFFu) != g_net) continue;
+
         const size_t n = static_cast<size_t>(got);
         if (n < 12) continue;                        // shorter than a header
 
@@ -190,6 +202,8 @@ bool begin(const char* dotted) {
         g_sock = -1;
         return false;
     }
+
+    g_net = g_addr & 0x00FFFFFFu;
 
     g_run = true;
     if (xTaskCreate(task, "gw-dns", 3072, nullptr, 4, &g_task) != pdPASS) {

@@ -340,12 +340,28 @@ bool begin() {
 void stop() {
     if (!g_up) return;
     g_run = false;
-    line::close(g_ln, "this gateway's serial line was switched off");
+    const line::Handle h = g_ln;
+    line::close(h, "this gateway's serial line was switched off");
+
+    // TWO waits, and the first version had only the second one while its
+    // comment described the hazard the first one covers.
+    //
+    // The pump is what calls wireRoom, wireSend and wireClose, so the
+    // driver cannot go until the pump has reaped the line: otherwise those
+    // three run against a deleted driver. The reader task is the other
+    // user and notices g_run within its 50 ms read timeout.
+    //
+    // Both waits are bounded and then given up on, because a stop that
+    // hangs for ever is worse than one that logs and carries on; stop() is
+    // unreachable today (a role change needs a restart) and this is what
+    // makes it safe the day it is not.
+    for (int i = 0; i < 50 && line::live(h); ++i) vTaskDelay(pdMS_TO_TICKS(10));
+    for (int i = 0; i < 50 && g_task; ++i) vTaskDelay(pdMS_TO_TICKS(10));
+    if (line::live(h) || g_task) {
+        ESP_LOGE(TAG, "the serial line did not let go; leaving the driver up");
+        return;
+    }
     g_ln.clear();
-    // The task notices g_run within its 50 ms read timeout and deletes
-    // itself; the driver goes only once it has, or the read would be
-    // against a deleted driver.
-    for (int i = 0; i < 20 && g_task; ++i) vTaskDelay(pdMS_TO_TICKS(10));
     uart_driver_delete(static_cast<uart_port_t>(GW_UART_PORT));
     g_up = false;
 }

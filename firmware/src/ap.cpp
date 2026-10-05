@@ -26,6 +26,7 @@
 // ===========================================================================
 #include "ap.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -54,13 +55,17 @@ bool  g_staUp  = false;
 char  g_ssid[33] = {0};
 char  g_addr[16] = {0};
 char  g_staAddr[16] = {0};
-uint8_t g_phones = 0;
+// Written on the Wi-Fi event task and read by main's tick and by the
+// HTTP server's handlers, so atomic rather than plain. Benign on an
+// aligned 32-bit Xtensa either way, and the point is that the discipline
+// is the same everywhere: ring.h and line.h would not accept less.
+std::atomic<uint8_t> g_phones{0};
 
 // Backing off a failed join, so a gateway in a field with a typo in its
-// network name is not a radio transmitting a scan every two seconds for a
-// week. First drop at once, then doubling to five minutes.
-uint32_t g_redialAt  = 0;
-uint32_t g_redialGap = 0;
+// network name is not a radio transmitting a scan every second for a week.
+// Nothing the first time, then 30 s doubling to five minutes.
+std::atomic<uint32_t> g_redialAt{0};
+std::atomic<uint32_t> g_redialGap{0};
 
 uint32_t ms() { return static_cast<uint32_t>(esp_timer_get_time() / 1000); }
 
@@ -88,20 +93,22 @@ void onWifi(void*, esp_event_base_t base, int32_t id, void* data) {
         switch (id) {
             case WIFI_EVENT_AP_STACONNECTED: {
                 auto* e = static_cast<wifi_event_ap_staconnected_t*>(data);
-                if (g_phones < 0xFF) ++g_phones;
+                uint8_t on = g_phones.load(std::memory_order_relaxed);
+                if (on < 0xFF) g_phones.store(++on, std::memory_order_relaxed);
                 ESP_LOGI(TAG, "a phone joined: %02x:%02x:%02x:%02x:%02x:%02x (%u on)",
                          e->mac[0], e->mac[1], e->mac[2], e->mac[3], e->mac[4], e->mac[5],
-                         g_phones);
+                         on);
                 break;
             }
             case WIFI_EVENT_AP_STADISCONNECTED: {
-                if (g_phones) --g_phones;
+                uint8_t on = g_phones.load(std::memory_order_relaxed);
+                if (on) g_phones.store(--on, std::memory_order_relaxed);
                 // A caller who walked away still holds a line until their
                 // WebSocket times out. Telling the line at once is phase 4's
                 // clean CLOSE; on a ten-line board it is the difference
                 // between ten lines and three, and it needs the association
                 // tied to the socket, which this phase does not have.
-                ESP_LOGI(TAG, "a phone left (%u on)", g_phones);
+                ESP_LOGI(TAG, "a phone left (%u on)", on);
                 break;
             }
             case WIFI_EVENT_STA_START:
@@ -119,14 +126,16 @@ void onWifi(void*, esp_event_base_t base, int32_t id, void* data) {
                 // with a mistyped network name scanned once a second for
                 // ever, sharing the radio with the callers its access
                 // point was carrying.
-                if (g_redialGap == 0)      g_redialGap = 30000u;
-                else                       g_redialGap *= 2;
-                if (g_redialGap > 300000u) g_redialGap = 300000u;
-                g_redialAt = ms();
-                if (!g_redialAt) g_redialAt = 1;   // 0 means "nothing pending"
+                uint32_t gap = g_redialGap.load(std::memory_order_relaxed);
+                gap = gap ? (gap * 2) : 30000u;
+                if (gap > 300000u) gap = 300000u;
+                g_redialGap.store(gap, std::memory_order_relaxed);
+                uint32_t at = ms();
+                if (!at) at = 1;                   // 0 means "nothing pending"
+                g_redialAt.store(at, std::memory_order_release);
                 ESP_LOGW(TAG, "left %s, reason %d; trying again in %u s",
                          settings::get().netSsid, e->reason,
-                         static_cast<unsigned>(g_redialGap / 1000));
+                         static_cast<unsigned>(gap / 1000));
                 break;
             }
             default:
@@ -139,7 +148,8 @@ void onWifi(void*, esp_event_base_t base, int32_t id, void* data) {
         auto* e = static_cast<ip_event_got_ip_t*>(data);
         snprintf(g_staAddr, sizeof g_staAddr, IPSTR, IP2STR(&e->ip_info.ip));
         g_staUp = true;
-        g_redialGap = 0;
+        g_redialGap.store(0, std::memory_order_relaxed);
+        g_redialAt.store(0, std::memory_order_relaxed);
 
         // Power save OFF, re-asserted here rather than once after
         // esp_wifi_start(). The core paid for this twice: starting the
@@ -336,7 +346,7 @@ bool        apUp()    { return g_apUp; }
 bool        secure()  { return g_secure; }
 const char* ssid()    { return g_ssid; }
 const char* addr()    { return g_addr; }
-uint8_t     phones()  { return g_phones; }
+uint8_t     phones()  { return g_phones.load(std::memory_order_relaxed); }
 bool        staUp()   { return g_staUp; }
 const char* staAddr() { return g_staAddr; }
 const char* staSsid() { return settings::get().netSsid; }
@@ -356,9 +366,15 @@ void tick() {
     // BE 0, which is why onWifi never stores it: a disconnect in the first
     // millisecond of uptime would otherwise never be retried. Same shape
     // as the pairing clock the core's link lane had to fix.
-    if (!g_redialAt) return;
-    if (since(ms(), g_redialAt) < g_redialGap) return;
-    g_redialAt = 0;
+    const uint32_t at = g_redialAt.load(std::memory_order_acquire);
+    if (!at) return;
+    if (since(ms(), at) < g_redialGap.load(std::memory_order_relaxed)) return;
+    // Compare-and-swap, so a GOT_IP clearing it on the Wi-Fi task between
+    // the read and here does not get a dial it did not want.
+    uint32_t want = at;
+    if (!g_redialAt.compare_exchange_strong(want, 0u, std::memory_order_acq_rel)) {
+        return;
+    }
     esp_wifi_connect();
 }
 

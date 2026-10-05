@@ -92,6 +92,15 @@
     }
   }
 
+  // The same bounds line.h keeps, so neither side has to guess what the
+  // other calls a legal window. The gateway treats an out-of-range figure
+  // as "use the default", so clamping here is what stops a very narrow
+  // glass being silently told to the board as 80 columns and wrapping
+  // every line.
+  var COLS_MIN = 20, COLS_MAX = 240, ROWS_MIN = 5, ROWS_MAX = 240;
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
   function showSize() {
     elSize.textContent = term.cols + 'x' + term.rows;
   }
@@ -103,10 +112,12 @@
   var sentCols = 0, sentRows = 0;
   function tellSize() {
     if (!ws || ws.readyState !== 1) return;
-    if (term.cols === sentCols && term.rows === sentRows) return;
-    sentCols = term.cols;
-    sentRows = term.rows;
-    ws.send('s ' + term.cols + ' ' + term.rows);
+    var c = clamp(term.cols, COLS_MIN, COLS_MAX);
+    var r = clamp(term.rows, ROWS_MIN, ROWS_MAX);
+    if (c === sentCols && r === sentRows) return;
+    sentCols = c;
+    sentRows = r;
+    ws.send('s ' + c + ' ' + r);
   }
 
   function refit() {
@@ -134,8 +145,8 @@
   var openCols = 0, openRows = 0;
 
   function connect() {
-    openCols = term.cols;
-    openRows = term.rows;
+    openCols = clamp(term.cols, COLS_MIN, COLS_MAX);
+    openRows = clamp(term.rows, ROWS_MIN, ROWS_MAX);
     var url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host +
               '/ws?b=' + board + '&c=' + openCols + '&r=' + openRows;
     ws = new WebSocket(url);

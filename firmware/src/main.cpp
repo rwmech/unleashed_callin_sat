@@ -93,6 +93,31 @@ void heapLine(const char* when) {
              static_cast<unsigned>(big));
 }
 
+// Stack headroom for every task this firmware starts, by name, because
+// the figure that matters is the LOWEST a stack ever got and nothing else
+// can see it. An overflow panics and reboots, which on a box in a field is
+// a reboot nobody can explain.
+//
+// The project's own rule, learnt the hard way on the board: the cure for
+// reasoning about a thing from the outside is making it say. Phase 2 reads
+// these off the console with the access point up and callers on.
+void stackLine() {
+    static const char* kTasks[] = { "gw-pump", "gw-dns", "gw-wire", "httpd" };
+    char line[128];
+    int w = snprintf(line, sizeof line, "stack free:");
+    for (const char* name : kTasks) {
+        const TaskHandle_t h = xTaskGetHandle(name);
+        if (!h) continue;
+        const UBaseType_t low = uxTaskGetStackHighWaterMark(h);
+        if (w < static_cast<int>(sizeof line)) {
+            w += snprintf(line + w, sizeof line - static_cast<size_t>(w),
+                          " %s %u,", name, static_cast<unsigned>(low));
+        }
+    }
+    if (w > 0 && line[w - 1] == ',') line[w - 1] = 0;
+    ESP_LOGI(TAG, "%s", line);
+}
+
 void sayWhatIAm() {
     const settings::Cfg& c = settings::get();
     char nm[24];
@@ -171,6 +196,7 @@ extern "C" void app_main() {
     uartsrv::begin();
 
     heapLine("with the roles up");
+    stackLine();
     ESP_LOGI(TAG, "web payload %u bytes of gzip in the app image",
              static_cast<unsigned>(web::payloadBytes()));
     ESP_LOGI(TAG, "----");
@@ -196,6 +222,7 @@ extern "C" void app_main() {
                          uartsrv::busy() ? "busy" : "free",
                          static_cast<unsigned>(dns::answered()));
                 heapLine("now");
+                stackLine();
             }
         }
     }

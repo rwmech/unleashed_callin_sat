@@ -437,6 +437,30 @@ void portalBody(httpd_req_t* req) {
     sayf(req, "<tr><td>Phones on this network</td><td>%u</td></tr>", ap::phones());
     sayf(req, "<tr><td>Channel</td><td>%u</td></tr>", ap::channel());
     say(req, "</table>");
+
+    // Each line, because the spec's own answer to "how is a fault at a
+    // fairground debugged with no laptop" is that the portal says. It is
+    // nearly free: the table machinery is already here for the board list.
+    if (busy) {
+        say(req, "<table class=\"kv\">");
+        for (uint8_t i = 0; i < line::kLines; ++i) {
+            const line::Line* l = line::at(i);
+            if (!l) continue;
+            const line::St st = l->st.load(std::memory_order_acquire);
+            if (st == line::St::Idle) continue;
+            const char* what = (st == line::St::Connecting) ? "calling"
+                             : (st == line::St::Up) ? "on" : "closing";
+            const settings::Board* b = settings::board(static_cast<uint8_t>(l->board + 1));
+            sayf(req, "<tr><td>Line %u</td><td>%s, %s, %ux%u, %u s</td></tr>",
+                 i + 1, (l->src == line::Src::Wire) ? "wire" : "phone", what,
+                 l->cols, l->rows,
+                 static_cast<unsigned>((esp_timer_get_time() / 1000000) -
+                                       (l->openedAt / 1000)));
+            (void)b;
+        }
+        say(req, "</table>");
+    }
+
     if (busy >= line::kLines) {
         say(req, "<p class=\"bad\">Every line on this gateway is in use. "
                  "Try again in a moment, or use the address below with a "
@@ -1090,10 +1114,17 @@ void setupForm(httpd_req_t* req, const char* problem, const char* done) {
 
     say(req, "<h2>Terminal server</h2>");
     snprintf(num, sizeof num, "%d", c.serTx);
-    row(req, "ser_tx", "TX pin", num, "This gateway's TX, to the terminal's RX. "
-        "-1 is off.");
+    row(req, "ser_tx", "TX pin", num,
+        board::pinIsStrap(c.serTx)
+            ? "This gateway's TX, to the terminal's RX. -1 is off. This one is a "
+              "strapping pin: it works, but it has a job at reset."
+            : "This gateway's TX, to the terminal's RX. -1 is off.");
     snprintf(num, sizeof num, "%d", c.serRx);
-    row(req, "ser_rx", "RX pin", num, "This gateway's RX, from the terminal's TX.");
+    row(req, "ser_rx", "RX pin", num,
+        board::pinIsStrap(c.serRx)
+            ? "This gateway's RX, from the terminal's TX. This one is a strapping "
+              "pin: it works, but it has a job at reset."
+            : "This gateway's RX, from the terminal's TX.");
     snprintf(num, sizeof num, "%u", static_cast<unsigned>(c.serBaud));
     row(req, "ser_baud", "Baud", num,
         "300, 1200, 2400, 9600, 19200, 38400, 57600 or 115200, matching the "
@@ -1331,10 +1362,22 @@ esp_err_t setupPost(httpd_req_t* req) {
 // ---------------------------------------------------------------------------
 //  The handler table
 // ---------------------------------------------------------------------------
-const httpd_uri_t kPortal = { "/", HTTP_GET, portalGet, nullptr, false, false, nullptr };
-const httpd_uri_t kSetupG = { "/setup", HTTP_GET, setupGet, nullptr, false, false, nullptr };
-const httpd_uri_t kSetupP = { "/setup", HTTP_POST, setupPost, nullptr, false, false, nullptr };
-const httpd_uri_t kWs     = { "/ws", HTTP_GET, wsHandler, nullptr, true, false, nullptr };
+// Built field by field from a zeroed struct, never as a positional list.
+// httpd_uri_t's tail fields are Kconfig-dependent (the WebSocket handshake
+// callbacks sit behind an #if), so a positional list is a field order this
+// code does not control; the core paid for exactly that with its plugin
+// descriptors, where a field inserted in the middle shifted every one
+// after it. A designated list would be as safe and warns about the tail,
+// so this is the shape that is both.
+httpd_uri_t mkUri(const char* path, httpd_method_t method,
+                  esp_err_t (*handler)(httpd_req_t*), bool ws = false) {
+    httpd_uri_t u = {};
+    u.uri          = path;
+    u.method       = method;
+    u.handler      = handler;
+    u.is_websocket = ws;
+    return u;
+}
 
 }  // namespace
 
@@ -1378,12 +1421,16 @@ bool begin() {
     }
     for (CloseWork& w : g_closeWork) w.fd = -1;
 
-    httpd_register_uri_handler(g_hd, &kPortal);
-    httpd_register_uri_handler(g_hd, &kSetupG);
-    httpd_register_uri_handler(g_hd, &kSetupP);
-    httpd_register_uri_handler(g_hd, &kWs);
+    const httpd_uri_t portal = mkUri("/", HTTP_GET, portalGet);
+    const httpd_uri_t setupG = mkUri("/setup", HTTP_GET, setupGet);
+    const httpd_uri_t setupP = mkUri("/setup", HTTP_POST, setupPost);
+    const httpd_uri_t ws     = mkUri("/ws", HTTP_GET, wsHandler, true);
+    httpd_register_uri_handler(g_hd, &portal);
+    httpd_register_uri_handler(g_hd, &setupG);
+    httpd_register_uri_handler(g_hd, &setupP);
+    httpd_register_uri_handler(g_hd, &ws);
     for (const WebAsset& a : kWebAssets) {
-        const httpd_uri_t u = { a.path, HTTP_GET, assetGet, nullptr, false, false, nullptr };
+        const httpd_uri_t u = mkUri(a.path, HTTP_GET, assetGet);
         httpd_register_uri_handler(g_hd, &u);
     }
     // One handler for every operating system's probe, because each of them

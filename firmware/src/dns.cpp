@@ -32,6 +32,7 @@
 // ===========================================================================
 #include "dns.h"
 
+#include <atomic>
 #include <cstring>
 
 #include "esp_log.h"
@@ -63,7 +64,8 @@ int           g_sock = -1;
 uint32_t      g_net  = 0;
 TaskHandle_t  g_task = nullptr;
 volatile bool g_run  = false;
-uint32_t      g_count = 0;
+// Written on the DNS task, read by main's console line.
+std::atomic<uint32_t> g_count{0};
 uint32_t      g_addr  = 0;      // network order
 
 uint16_t rd16(const uint8_t* p) {
@@ -169,7 +171,7 @@ void task(void*) {
             out[w++] = 0; out[w++] = 0; out[w++] = 0; out[w++] = 0;
             wr16(out + w, 4); w += 2;
             memcpy(out + w, &g_addr, 4); w += 4;     // already network order
-            ++g_count;
+            g_count.fetch_add(1, std::memory_order_relaxed);
         }
 
         sendto(g_sock, out, w, 0, reinterpret_cast<sockaddr*>(&from), flen);
@@ -226,6 +228,6 @@ void stop() {
     }
 }
 
-uint32_t answered() { return g_count; }
+uint32_t answered() { return g_count.load(std::memory_order_relaxed); }
 
 }  // namespace dns

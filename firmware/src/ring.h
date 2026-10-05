@@ -44,6 +44,18 @@
 #include <cstdint>
 #include <cstring>
 
+// A switch that removes the guards one at a time, for the host tests
+// only. Macros and not an enum, because the preprocessor cannot see an
+// enumerator: written as an enum every `#if` below would compare 0 against
+// an unknown identifier, read 0, and compile every guard OUT. That was
+// made once in dnsparse.h and caught by -Werror.
+#ifndef GW_TEST_BREAK
+#define GW_TEST_BREAK 0
+#endif
+#define RBREAK_PUSH_CLAMP 1   /* let a push write past the room */
+#define RBREAK_POP_CLAMP  2   /* let a pop read past what is used */
+#define RBREAK_DROP_CLAMP 3   /* let a drop move the tail past the head */
+
 // N must be a power of two: the mask is what keeps the wrap free of a
 // division, and a non-power-of-two N would silently corrupt the indices.
 template <size_t N>
@@ -67,7 +79,11 @@ public:
     // not lose bytes can wait and offer the rest rather than assuming.
     size_t push(const uint8_t* p, size_t n) {
         const size_t r = room();
+#if GW_TEST_BREAK != RBREAK_PUSH_CLAMP
         if (n > r) n = r;
+#else
+        (void)r;
+#endif
         size_t h = head_.load(std::memory_order_relaxed);
         for (size_t i = 0; i < n; ++i) {
             buf_[(h + i) & (N - 1)] = p[i];
@@ -85,7 +101,11 @@ public:
 
     size_t pop(uint8_t* p, size_t n) {
         const size_t u = used();
+#if GW_TEST_BREAK != RBREAK_POP_CLAMP
         if (n > u) n = u;
+#else
+        (void)u;
+#endif
         size_t t = tail_.load(std::memory_order_relaxed);
         for (size_t i = 0; i < n; ++i) {
             p[i] = buf_[(t + i) & (N - 1)];
@@ -109,7 +129,11 @@ public:
 
     void drop(size_t n) {
         const size_t u = used();
+#if GW_TEST_BREAK != RBREAK_DROP_CLAMP
         if (n > u) n = u;
+#else
+        (void)u;
+#endif
         tail_.store(tail_.load(std::memory_order_relaxed) + n, std::memory_order_release);
     }
 

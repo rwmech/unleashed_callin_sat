@@ -37,7 +37,11 @@ namespace {
 constexpr uint16_t kSbMax = 64;
 
 inline void say(uint8_t* reply, size_t cap, size_t& len, uint8_t cmd, uint8_t opt) {
+#if GW_TEST_BREAK != TBREAK_REPLY_ROOM
     if (len + 3 > cap) return;   // dropped whole; see telnet.h
+#else
+    if (len >= cap) return;      // the broken form: truncates
+#endif
     reply[len++] = IAC;
     reply[len++] = cmd;
     reply[len++] = opt;
@@ -112,7 +116,11 @@ size_t filter(State& s, uint8_t* buf, size_t n,
 
             case 3:
                 if (c == IAC) { s.st = 4; }
+#if GW_TEST_BREAK != TBREAK_SB_BOUND
                 else if (++s.sbSeen > kSbMax) { s.st = 0; }
+#else
+                else { ++s.sbSeen; }
+#endif
                 break;
 
             case 4:
@@ -140,7 +148,9 @@ size_t escape(const uint8_t* in, size_t n, uint8_t* out, size_t cap) {
     // All or nothing: half an escaped burst would put a bare 0xFF on the
     // wire at the split and the board would read the next byte as a
     // command. The caller sizes `cap` at 2n for exactly this reason.
+#if GW_TEST_BREAK != TBREAK_ESCAPE_CAP
     if (cap < n * 2) return 0;
+#endif
     size_t w = 0;
     for (size_t i = 0; i < n; ++i) {
         out[w++] = in[i];
@@ -171,9 +181,11 @@ size_t naws(const State& s, uint8_t* out, size_t cap, uint16_t cols, uint16_t ro
                            static_cast<uint8_t>(rows >> 8), static_cast<uint8_t>(rows & 0xFF) };
     for (uint8_t b : v) {
         out[w++] = b;
-        // Inside a subnegotiation a 0xFF is still doubled, which bites at
-        // exactly 255 columns and would otherwise end the SB early.
+        // Inside a subnegotiation a 0xFF is still doubled (RFC 855), which
+        // bites at exactly 255 columns and would otherwise end the SB early.
+#if GW_TEST_BREAK != TBREAK_NAWS_IAC
         if (b == IAC) out[w++] = IAC;
+#endif
     }
     out[w++] = IAC; out[w++] = SE;
     return w;

@@ -55,6 +55,24 @@
 #include <cstddef>
 #include <cstdint>
 
+// A switch that removes the guards one at a time, for the host tests
+// only. Each value disables exactly one check, so a test can prove it is
+// THAT check which catches a given stream. Never defined in a firmware
+// build.
+//
+// Macros and not an enum: the preprocessor cannot see an enumerator, and
+// written as an enum every `#if` here would compare 0 against an unknown
+// identifier, read 0, and compile every guard OUT. That mistake was made
+// once already in dnsparse.h and caught by -Werror; it is written down so
+// it is not made a third time.
+#ifndef GW_TEST_BREAK
+#define GW_TEST_BREAK 0
+#endif
+#define TBREAK_SB_BOUND   1   /* let a subnegotiation run for ever */
+#define TBREAK_REPLY_ROOM 2   /* truncate a reply instead of dropping it */
+#define TBREAK_ESCAPE_CAP 3   /* let an escaped burst be split */
+#define TBREAK_NAWS_IAC   4   /* do not double a 255 inside a subnegotiation */
+
 namespace telnet {
 
 // The commands and options this layer knows. Anything else is refused,

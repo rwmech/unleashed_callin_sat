@@ -19,13 +19,17 @@
 #                             nothing, and this project has shipped tests
 #                             that agreed with the bug.
 #
-#                             Some guards cannot change a verdict: their
-#                             whole job is to stop an out-of-bounds READ,
-#                             and what gets read is whatever is next in
-#                             memory, which may be refused further down for
-#                             an unrelated reason. Those fall back to being
-#                             proved under AddressSanitizer, and the run
-#                             says which route proved which.
+#                             Three ways a guard can be proved, and the
+#                             run says which one did it:
+#                               - a check fails, which is the usual case;
+#                               - the code HANGS, which is the proof for a
+#                                 clamp whose absence leaves a consumer
+#                                 waiting for octets that never come;
+#                               - or AddressSanitizer trips, which is the
+#                                 only proof available for a guard whose
+#                                 whole job is to stop an out-of-bounds
+#                                 READ: what gets read is whatever is next
+#                                 in memory, so no verdict need change.
 #              make asan      the same, under AddressSanitizer and UBSan,
 #                             which is where an out-of-bounds read in the
 #                             DNS parser becomes a crash rather than a pass
@@ -80,8 +84,11 @@ test: $(TESTS)
 	 echo; if [ $$fail -eq 0 ]; then echo "ALL SUITES PASS"; \
 	 else echo "A SUITE FAILED"; exit 1; fi
 
+# -pthread, because the ring's concurrency check runs two real threads:
+# one producer and one consumer, which is the only way to find an index
+# owned by the wrong side.
 test_ring: test_ring.cpp check.h $(SRC)/ring.h
-	$(CXX) $(CXXFLAGS) -o $@ $<
+	$(CXX) $(CXXFLAGS) -pthread -o $@ $<
 
 test_telnet: test_telnet.cpp check.h $(SRC)/telnet.h $(SRC)/telnet.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $< $(SRC)/telnet.cpp
@@ -122,12 +129,17 @@ break: $(TESTS)
 	  extra=""; more=""; \
 	  [ "$$u" = settings ] && extra="-DGW_BOARD_WROOM32"; \
 	  [ "$$u" = telnet ] && more="$(SRC)/telnet.cpp"; \
+	  [ "$$u" = ring ] && extra="$$extra -pthread"; \
 	  if ! $(CXX) $(BREAKFLAGS) $$extra -DGW_TEST_BREAK=$$v \
 	        -o brk_$$u test_$$u.cpp $$more >/dev/null 2>&1; then \
 	    echo "  $$u break=$$v: DID NOT COMPILE"; bad=1; continue; \
 	  fi; \
-	  ./brk_$$u > brk.log 2>&1 || true; \
+	  rc=0; timeout 60 ./brk_$$u > brk.log 2>&1 || rc=$$?; \
 	  n=`grep -c '^   FAIL' brk.log || true`; \
+	  if [ "$$rc" = 124 ]; then \
+	    echo "  $$u break=$$v: it HANGS without the guard, as it must"; \
+	    rm -f brk_$$u brk.log; continue; \
+	  fi; \
 	  if [ "$$n" -gt 0 ]; then \
 	    echo "  $$u break=$$v: $$n checks fail, as they must"; \
 	    grep '^   FAIL' brk.log | head -2 | sed 's/^/      /'; \
@@ -139,7 +151,7 @@ break: $(TESTS)
 	    echo "  $$u break=$$v: NO CHECK CAUGHT IT and ASan would not build"; \
 	    bad=1; continue; \
 	  fi; \
-	  if setarch `uname -m` -R ./brk_$$u > brk.log 2>&1; then \
+	  if timeout 60 setarch `uname -m` -R ./brk_$$u > brk.log 2>&1; then \
 	    echo "  $$u break=$$v: NO CHECK CAUGHT IT - the guard is untested"; bad=1; \
 	  else \
 	    echo "  $$u break=$$v: no verdict changed, but ASan trips, as it must"; \
@@ -166,6 +178,7 @@ asan:
 	@for t in $(TESTS); do \
 	  case $$t in test_settings) extra="-DGW_BOARD_WROOM32";; *) extra="";; esac; \
 	  case $$t in test_telnet) more="$(SRC)/telnet.cpp";; *) more="";; esac; \
+	  case $$t in test_ring) extra="$$extra -pthread";; esac; \
 	  $(CXX) $(CXXFLAGS) $(SAN) $$extra -o san_$$t $$t.cpp $$more || exit 1; \
 	  setarch $$(uname -m) -R ./san_$$t || exit 1; rm -f san_$$t; \
 	done; \

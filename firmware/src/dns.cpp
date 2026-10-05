@@ -35,6 +35,11 @@
 #include <atomic>
 #include <cstring>
 
+// The wire format lives in a header with no platform in it, so the host
+// tests drive exactly the code that ships. See dnsparse.h for why that
+// matters here more than elsewhere: every byte comes from a stranger.
+#include "dnsparse.h"
+
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -45,14 +50,6 @@ namespace dns {
 namespace {
 
 const char* TAG = "gw-dns";
-
-// A DNS message over UDP is 512 bytes without EDNS0. A question longer than
-// that is not one this box needs to answer.
-constexpr size_t kMsgMax = 512;
-
-constexpr uint16_t kTypeA    = 1;
-constexpr uint16_t kTypeAAAA = 28;
-constexpr uint16_t kClassIn  = 1;
 
 int           g_sock = -1;
 // The /24 this gateway's access point hands out, in network order. Only a
@@ -68,45 +65,8 @@ volatile bool g_run  = false;
 std::atomic<uint32_t> g_count{0};
 uint32_t      g_addr  = 0;      // network order
 
-uint16_t rd16(const uint8_t* p) {
-    return static_cast<uint16_t>((static_cast<uint16_t>(p[0]) << 8) | p[1]);
-}
-
-void wr16(uint8_t* p, uint16_t v) {
-    p[0] = static_cast<uint8_t>(v >> 8);
-    p[1] = static_cast<uint8_t>(v & 0xFF);
-}
-
-// Walks one question's name and returns the offset just past its QTYPE and
-// QCLASS, or 0 if the question is malformed.
-//
-// Three malformations are refused here, and each of them is a real packet
-// somebody has sent a DNS server:
-//   - a label length of 64 or more, which is the two high bits set and so
-//     a COMPRESSION POINTER. A pointer in a question is illegal, and
-//     following one is how a parser is made to loop for ever on a packet
-//     that points at itself;
-//   - a name that never terminates before the end of the packet;
-//   - a name whose labels add up past 255, the protocol's own limit.
-size_t walkName(const uint8_t* msg, size_t n, size_t at, size_t& nameLen) {
-    nameLen = 0;
-    while (at < n) {
-        const uint8_t len = msg[at];
-        if (len == 0) {
-            ++at;
-            // QTYPE and QCLASS, four bytes, must also be inside the packet.
-            return (at + 4 <= n) ? at + 4 : 0;
-        }
-        if (len >= 0x40) return 0;                   // a pointer, or a reserved form
-        if (nameLen + len + 1 > 255) return 0;
-        at += static_cast<size_t>(len) + 1;
-        nameLen += static_cast<size_t>(len) + 1;
-    }
-    return 0;                                        // ran off the end
-}
-
 void task(void*) {
-    uint8_t msg[kMsgMax];
+    uint8_t msg[dnsparse::kMsgMax];
     while (g_run) {
         sockaddr_in from = {};
         socklen_t   flen = sizeof from;
@@ -125,54 +85,14 @@ void task(void*) {
         // parser.
         if (g_net && (from.sin_addr.s_addr & 0x00FFFFFFu) != g_net) continue;
 
-        const size_t n = static_cast<size_t>(got);
-        if (n < 12) continue;                        // shorter than a header
+        const dnsparse::Question q = dnsparse::read(msg, static_cast<size_t>(got));
+        if (!q.ok) continue;
 
-        const uint16_t flags = rd16(msg + 2);
-        if (flags & 0x8000) continue;                // already an answer; not ours to answer
-        if (((flags >> 11) & 0x0F) != 0) continue;    // not a standard query (OPCODE 0)
-
-        const uint16_t qd = rd16(msg + 4);
-        if (qd != 1) continue;                       // exactly one question, which is every real one
-
-        size_t nameLen = 0;
-        const size_t qEnd = walkName(msg, n, 12, nameLen);
-        if (!qEnd) continue;
-
-        const uint16_t qtype  = rd16(msg + qEnd - 4);
-        const uint16_t qclass = rd16(msg + qEnd - 2);
-        if (qclass != kClassIn) continue;
-
-        // The reply is the question with the header rewritten, which is what
-        // keeps the name's bytes exactly as they were asked and lets the
-        // answer point at offset 12 rather than repeating them.
-        uint8_t out[kMsgMax];
-        if (qEnd + 16 > sizeof out) continue;        // no room for the answer record
-        memcpy(out, msg, qEnd);
-        size_t w = qEnd;
-
-        const bool answerable = (qtype == kTypeA);
-        // QR=1, AA=1, RD copied from the question, RA=0, RCODE=0.
-        // NOERROR with no records for anything but A: that tells a phone
-        // "there is no AAAA here" and it stops waiting, where NXDOMAIN
-        // would tell it the NAME does not exist and some resolvers then
-        // give up on the A as well.
-        wr16(out + 2, static_cast<uint16_t>(0x8400 | (flags & 0x0100)));
-        wr16(out + 4, 1);                            // QDCOUNT
-        wr16(out + 6, answerable ? 1 : 0);           // ANCOUNT
-        wr16(out + 8, 0);                            // NSCOUNT
-        wr16(out + 10, 0);                           // ARCOUNT
-
-        if (answerable) {
-            out[w++] = 0xC0; out[w++] = 0x0C;        // the name, as a pointer to offset 12
-            wr16(out + w, kTypeA);   w += 2;
-            wr16(out + w, kClassIn); w += 2;
-            // TTL 0: see dns.h. A cached hijack travels with the phone.
-            out[w++] = 0; out[w++] = 0; out[w++] = 0; out[w++] = 0;
-            wr16(out + w, 4); w += 2;
-            memcpy(out + w, &g_addr, 4); w += 4;     // already network order
-            g_count.fetch_add(1, std::memory_order_relaxed);
-        }
+        uint8_t out[dnsparse::kMsgMax];
+        const size_t w = dnsparse::reply(msg, static_cast<size_t>(got), q,
+                                         g_addr, out, sizeof out);
+        if (!w) continue;
+        if (q.isA) g_count.fetch_add(1, std::memory_order_relaxed);
 
         sendto(g_sock, out, w, 0, reinterpret_cast<sockaddr*>(&from), flen);
     }

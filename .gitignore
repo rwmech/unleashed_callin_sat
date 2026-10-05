@@ -42,3 +42,12 @@ firmware/.core-cache/
 
 *.pyc
 __pycache__/
+
+# Host test binaries
+host/test_ring
+host/test_telnet
+host/test_dns
+host/test_settings
+host/brk_*
+host/san_*
+host/brk.log

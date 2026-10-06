@@ -50,6 +50,7 @@
 // with this program. If not, see <https://www.gnu.org/licenses/>.
 // ===========================================================================
 #include <cstdio>
+#include <cstring>
 
 #include "esp_app_desc.h"
 #include "esp_heap_caps.h"
@@ -165,8 +166,26 @@ void sayWhatIAm() {
                       "to call. Add one on the portal's setup page.");
     }
     if (!settings::passwordSet() && c.ap) {
-        ESP_LOGW(TAG, "this gateway's setup page has NO PASSWORD: anyone on its "
-                      "open network can change its settings. Set one.");
+        // Three different situations, and "open network" was the wording for
+        // only one of them. The published password is barely better than
+        // open here: it is meant to be printed on a sign, so it keeps a
+        // passer-by off the AIR and nobody out of the setup page. Saying
+        // "open" on a WPA2 box was wrong, and saying "Wi-Fi" on a box still
+        // on the published word would have been worse, because it implies a
+        // barrier that is written on the sign next to it.
+        if (!c.apPass[0]) {
+            ESP_LOGW(TAG, "this gateway's setup page has NO PASSWORD and its "
+                          "network is open: anyone in range can change its "
+                          "settings. Set one.");
+        } else if (strcmp(c.apPass, GW_AP_PASS_PUBLISHED) == 0) {
+            ESP_LOGW(TAG, "this gateway's setup page has NO PASSWORD and its "
+                          "network is on the published \"" GW_AP_PASS_PUBLISHED
+                          "\": anyone who reads the sign can change its "
+                          "settings. Set one.");
+        } else {
+            ESP_LOGW(TAG, "this gateway's setup page has NO PASSWORD: anyone "
+                          "on its Wi-Fi can change its settings. Set one.");
+        }
     }
 }
 

@@ -76,7 +76,19 @@ struct Board {
 // recent Android and Samsung devices, and answering 200 with a body rather
 // than 302 is one of the two things people report fixing it. Secondary and
 // unexplained, free to switch, and phase 2 tries both on a real phone.
+//
+// PHASE 2 RAN IT, 2026-10-06, and the reports are right: a Samsung on
+// Android showed "Internet may not be available" rather than "Sign in to
+// network" under PROBE_REDIRECT, which is NetworkMonitor's no-internet
+// branch rather than its portal branch. PROBE_PAGE is the default now and
+// REDIRECT is kept, because the evidence is one handset and the setting
+// costs a byte: a phone that wants the 302 can still have it.
 enum : uint8_t { PROBE_REDIRECT = 0, PROBE_PAGE = 1 };
+
+// The access point's published password, in one place so the default and
+// every line that reasons about it cannot drift. It is meant to be printed
+// on a sign, not kept: see apPass below.
+#define GW_AP_PASS_PUBLISHED "unleashed"
 
 enum : uint8_t { FMT_8N1 = 0, FMT_7E1 = 1, FMT_7N1 = 2 };
 enum : uint8_t { FLOW_NONE = 0, FLOW_RTSCTS = 1 };
@@ -137,14 +149,35 @@ struct Cfg {
     // changed network name with an untouched password saved an SSID with no
     // key and the next boot tried it as an open network. The sysop is told
     // instead.
-    char     apSsid[33]  = {0};          // blank: this gateway's own name
-    char     apPass[65]  = "unleashed";  // blank: open; set: WPA2 with CCMP
-    char     apAddr[16]  = "172.16.0.1";
+    char     apSsid[33]  = {0};                 // blank: this gateway's own name
+    char     apPass[65]  = GW_AP_PASS_PUBLISHED;  // blank: open; set: WPA2 + CCMP
+    // 4.3.2.1, which is WLED's (Rob, 2026-10-06: "this should also be like
+    // WLED where its 4.3.2.1 ... as its easier to remember"). The address
+    // goes on the sign beside the network's name at a fairground, so being
+    // sayable is the requirement, and four descending digits is as good as
+    // that gets. It is also well away from 192.168.4.1, which is the ESP32
+    // default every tutorial uses and one of the two things people report
+    // fixing a portal that will not pop.
+    //
+    // It IS public address space (4.0.0.0/8), and WLED has shipped it for
+    // years regardless: this box routes nothing, so the subnet is an island
+    // and no packet for the real 4.3.2.1 ever leaves a phone that is on it.
+    // A gateway given an uplink later would need to think about that again.
+    //
+    // That is not free, and it bit within a minute of the first flash: a
+    // tool on the bench refused to reach 4.3.2.1 because it classes public
+    // space as the internet, and VPNs, firewalls and device policies make
+    // the same distinction. Rob weighed it and kept the address anyway
+    // (2026-10-06): "its proven to work with wled and im guessing hes had a
+    // lot more people report bugs that youve seen on the topic". Which is
+    // the right way to settle it - a thing shipped to that many boxes has
+    // better evidence behind it than an argument from first principles.
+    char     apAddr[16]  = "4.3.2.1";
     uint8_t  apChan      = 0;        // 0: follow the board (blank on the form)
     uint8_t  apMax       = 15;
     uint16_t apBeacon    = 100;      // TU
     uint8_t  apDtim      = 1;        // 1 keeps a sleeping phone's keystrokes quick
-    uint8_t  apProbe     = PROBE_REDIRECT;
+    uint8_t  apProbe     = PROBE_PAGE;   // phase 2 on a real Samsung; see above
 
     // The network this gateway joins, when there is a router to join. Not
     // in the spec's §4.2 tables, and needed by its own use-case rows: a
